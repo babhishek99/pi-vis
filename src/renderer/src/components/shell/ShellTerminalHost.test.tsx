@@ -249,6 +249,7 @@ function setExecution(
     };
     sessions.set(SESSION_ID, {
       ...session,
+      availability: "available",
       authorityProjection,
       transcript: {
         ...createTranscriptState(),

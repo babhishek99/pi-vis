@@ -309,13 +309,33 @@
   min-width: 0; /* allow the flex item to shrink so the fade truncation engages */
 }
 
-/* Hover-revealed action buttons (archive + pin). At rest they occupy ZERO
+.sidebar__new-session-row {
+  display: flex;
+  align-items: center;
+}
+
+.sidebar__new-session-row .sidebar__new-session {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar__pending-restart {
+  margin-right: var(--space-2);
+  color: var(--text-ghost);
+}
+
+.sidebar__pending-restart:hover {
+  color: var(--danger);
+}
+
+/* Hover-revealed action buttons (restart, archive, pin). At rest they occupy ZERO
    width — width, padding, and the row gap (cancelled by the negative
    margin) all collapse — so the session name gets the entire row and its
    fade truncation only engages when genuinely out of room. Hovering or
    keyboard-focusing the row expands them (width + opacity transition); the
    name's FadeText re-measures live via its ResizeObserver, so the label
    re-fades to the reduced width as the buttons appear. */
+.sidebar__session-restart,
 .sidebar__session-archive,
 .sidebar__session-pin {
   display: inline-flex;
@@ -335,6 +355,7 @@
   border-radius: var(--radius-sm);
 }
 
+.sidebar__session:is(:hover, :has(:focus-visible)) .sidebar__session-restart,
 .sidebar__session:is(:hover, :has(:focus-visible)) .sidebar__session-archive,
 .sidebar__session:is(:hover, :has(:focus-visible)) .sidebar__session-pin,
 .sidebar__session--pinned .sidebar__session-pin {
@@ -343,14 +364,17 @@
   opacity: 1;
 }
 
+.sidebar__session-restart,
 .sidebar__session-archive {
   font-size: 0.929em;
   transition: width 0.12s ease, margin 0.12s ease, opacity 0.12s ease, background 0.1s, color 0.1s;
 }
+.sidebar__session-restart:hover,
 .sidebar__session-archive:hover {
   background: var(--surface-3);
   color: var(--danger);
 }
+.sidebar__session-restart svg,
 .sidebar__session-archive svg {
   width: 0.95em;
   height: 0.95em;

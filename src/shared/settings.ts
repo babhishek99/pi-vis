@@ -33,7 +33,7 @@ export const AppSettingsSchema = z.object({
   // Pi-Vis's reserved PIVIS_* control variables. Values are strings, matching
   // Node's child_process env contract. Invalid/reserved names are filtered at
   // spawn time so a hand-edited settings.json can't break internal plumbing.
-  piEnv: z.record(z.coerce.string()).default({}),
+  piEnv: z.record(z.string(), z.coerce.string()).default({}),
   fonts: z
     .object({
       display: DisplayFontSettingsSchema.default({ sizePx: 14 }),
@@ -45,7 +45,7 @@ export const AppSettingsSchema = z.object({
       transcriptHeader: FontFamilySettingsSchema.default({ family: "IBM Plex Serif" }),
       transcriptBody: FontFamilySettingsSchema.default({ family: "Inter" }),
     })
-    .default({}),
+    .prefault({}),
   // Manual workspace ordering. The sidebar renders workspaces in this
   // order; the user reorders via drag. A newly-picked workspace is appended
   // to the end (never prepended) so it never displaces a manually-positioned

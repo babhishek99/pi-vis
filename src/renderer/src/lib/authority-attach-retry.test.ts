@@ -255,4 +255,131 @@ describe("AuthorityAttachRetry", () => {
 
     expect(authorityAttach).toHaveBeenCalledTimes(2);
   });
+
+  it.each(["renderer", "authority"] as const)(
+    "ignores a delayed predecessor %s attach after lifecycle cancellation without cancelling its successor",
+    async (phase) => {
+      let resolveOld!: (result: RendererAttachResult | AuthorityAttachResponse) => void;
+      let resolveFresh!: (result: AuthorityAttachResponse) => void;
+      const old = new Promise<RendererAttachResult | AuthorityAttachResponse>((resolve) => {
+        resolveOld = resolve;
+      });
+      const fresh = new Promise<AuthorityAttachResponse>((resolve) => {
+        resolveFresh = resolve;
+      });
+      const rendererAttach = vi.fn().mockResolvedValue(attached);
+      const authorityAttach = vi.fn().mockImplementation(() => fresh);
+      if (phase === "renderer") rendererAttach.mockImplementationOnce(() => old);
+      else authorityAttach.mockImplementationOnce(() => old);
+      const onReady = vi.fn();
+      const retry = new AuthorityAttachRetry({
+        sessionExists: () => true,
+        needsAttach: () => true,
+        rendererAttach,
+        authorityAttach,
+        onReady,
+        onUnavailable: vi.fn(),
+      });
+
+      const predecessor = retry.request(SID);
+      await Promise.resolve();
+      // Mirrors App's synchronous starting/transitioning transport fence.
+      retry.cancel(SID);
+      await predecessor;
+      let successorCompleted = false;
+      const successor = retry.request(SID).then(() => {
+        successorCompleted = true;
+      });
+      await Promise.resolve();
+      resolveOld(phase === "renderer" ? attached : ready);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(onReady).not.toHaveBeenCalled();
+      expect(successorCompleted).toBe(false);
+
+      resolveFresh(ready);
+      await successor;
+      expect(onReady).toHaveBeenCalledOnce();
+      expect(onReady).toHaveBeenCalledWith(SID, ready);
+      expect(authorityAttach).toHaveBeenCalledTimes(phase === "renderer" ? 1 : 2);
+    },
+  );
+
+  it("resolves the cancelled cycle when a retry timer discovers a removed session", async () => {
+    vi.useFakeTimers();
+    let exists = true;
+    const retry = new AuthorityAttachRetry({
+      sessionExists: () => exists,
+      needsAttach: () => true,
+      rendererAttach: vi.fn().mockResolvedValue(attached),
+      authorityAttach: vi.fn().mockResolvedValue(transitioning),
+      onReady: vi.fn(),
+      onUnavailable: vi.fn(),
+    });
+    let completed = false;
+    const cycle = retry.request(SID).then(() => {
+      completed = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    exists = false;
+    await vi.advanceTimersByTimeAsync(250);
+    expect(completed).toBe(true);
+    await cycle;
+  });
+
+  it("does not complete a new cycle started synchronously by onReady", async () => {
+    let resolveFresh!: (response: AuthorityAttachResponse) => void;
+    const fresh = new Promise<AuthorityAttachResponse>((resolve) => {
+      resolveFresh = resolve;
+    });
+    let successor: Promise<void> | undefined;
+    let successorCompleted = false;
+    const onReady = vi.fn(() => {
+      if (onReady.mock.calls.length !== 1) return;
+      retry.cancel(SID);
+      successor = retry.request(SID).then(() => {
+        successorCompleted = true;
+      });
+    });
+    const retry: AuthorityAttachRetry = new AuthorityAttachRetry({
+      sessionExists: () => true,
+      needsAttach: () => true,
+      rendererAttach: vi.fn().mockResolvedValue(attached),
+      authorityAttach: vi.fn().mockResolvedValueOnce(ready).mockReturnValueOnce(fresh),
+      onReady,
+      onUnavailable: vi.fn(),
+    });
+    await retry.request(SID);
+    await Promise.resolve();
+    expect(successorCompleted).toBe(false);
+    resolveFresh(ready);
+    await successor;
+    expect(successorCompleted).toBe(true);
+    expect(onReady).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a synchronous renderer transport throw within its owning cycle", async () => {
+    vi.useFakeTimers();
+    const rendererAttach = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error("transport closed before IPC");
+      })
+      .mockResolvedValue(attached);
+    const onReady = vi.fn();
+    const retry = new AuthorityAttachRetry({
+      sessionExists: () => true,
+      needsAttach: () => true,
+      rendererAttach,
+      authorityAttach: vi.fn().mockResolvedValue(ready),
+      onReady,
+      onUnavailable: vi.fn(),
+    });
+    const cycle = retry.request(SID);
+    expect(rendererAttach).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(250);
+    await cycle;
+    expect(rendererAttach).toHaveBeenCalledTimes(2);
+    expect(onReady).toHaveBeenCalledOnce();
+  });
 });

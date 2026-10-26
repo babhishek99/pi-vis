@@ -11,7 +11,7 @@ const PI_PACKAGE = JSON.parse(readFileSync(join(PI_ROOT, "package.json"), "utf8"
   bin: { pi: string };
 };
 const PI_CLI = join(PI_ROOT, PI_PACKAGE.bin.pi);
-const PI_MCP_ROOT = join(PI_ROOT, "node_modules", "@earendil-works", "pi-mcp");
+const PI_MCP_ROOT = join(process.cwd(), "node_modules", "@earendil-works", "pi-mcp");
 const PI_MCP_PACKAGE = JSON.parse(readFileSync(join(PI_MCP_ROOT, "package.json"), "utf8")) as {
   exports: Record<string, { import: string }>;
 };

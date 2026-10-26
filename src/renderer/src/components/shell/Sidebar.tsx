@@ -12,7 +12,13 @@ import {
 } from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { FadeText } from "../common/FadeText.js";
-import { IconArchive, IconChevronRight, IconClose, IconSearch } from "../common/icons.js";
+import {
+  IconArchive,
+  IconChevronRight,
+  IconClose,
+  IconRestart,
+  IconSearch,
+} from "../common/icons.js";
 import { openSessionSearch } from "../session-search/SessionSearchModal.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import "./Sidebar.css";
@@ -119,6 +125,7 @@ export function Sidebar({
   const openSessionTab = useSessionsStore((s) => s.openSessionTab);
   const closeSessionTab = useSessionsStore((s) => s.closeSessionTab);
   const archiveSession = useSessionsStore((s) => s.archiveSession);
+  const forceRestartSession = useSessionsStore((s) => s.forceRestartSession);
   const setActiveSession = useSessionsStore((s) => s.setActiveSession);
   const requestComposerFocus = useSessionsStore((s) => s.requestComposerFocus);
   const setActiveWorkspace = useSessionsStore((s) => s.setActiveWorkspace);
@@ -140,6 +147,11 @@ export function Sidebar({
   const pinnedDragKeyRef = useRef<string | null>(null);
   const [pendingArchive, setPendingArchive] = useState<PendingArchive | null>(null);
   const [archiveInProgress, setArchiveInProgress] = useState(false);
+  const [pendingRestart, setPendingRestart] = useState<{
+    sessionId: SessionId;
+    name: string;
+    returnFocus: HTMLButtonElement;
+  } | null>(null);
 
   // Pinned sessions (by file path) as a Set for O(1) lookup during render.
   const pinnedSet = useMemo(() => new Set(pinnedSessions), [pinnedSessions]);
@@ -610,17 +622,39 @@ export function Sidebar({
                     );
                     return (
                       <>
-                        <button
-                          type="button"
-                          className={`sidebar__new-session ${isNewButtonSelected ? "sidebar__new-session--selected" : ""}`}
-                          onClick={() => handleNewSession(ws.path)}
-                        >
-                          <svg className="sidebar__add-icon" viewBox="0 0 24 24" aria-hidden="true">
-                            <path d="M12 5v14" />
-                            <path d="M5 12h14" />
-                          </svg>
-                          <span>New session</span>
-                        </button>
+                        <div className="sidebar__new-session-row">
+                          <button
+                            type="button"
+                            className={`sidebar__new-session ${isNewButtonSelected ? "sidebar__new-session--selected" : ""}`}
+                            onClick={() => handleNewSession(ws.path)}
+                          >
+                            <svg
+                              className="sidebar__add-icon"
+                              viewBox="0 0 24 24"
+                              aria-hidden="true"
+                            >
+                              <path d="M12 5v14" />
+                              <path d="M5 12h14" />
+                            </svg>
+                            <span>New session</span>
+                          </button>
+                          {isNewButtonSelected && activeSessionId && (
+                            <button
+                              type="button"
+                              className="sidebar__pending-restart icon-btn"
+                              title="Force restart host"
+                              onClick={(e) =>
+                                setPendingRestart({
+                                  sessionId: activeSessionId,
+                                  name: "New session",
+                                  returnFocus: e.currentTarget,
+                                })
+                              }
+                            >
+                              <IconRestart />
+                            </button>
+                          )}
+                        </div>
 
                         {/* Unified session list (live + stored, paginated) */}
                         {visibleSessions.map((entry) => {
@@ -684,6 +718,22 @@ export function Sidebar({
                                   />
                                 )}
                                 <FadeText className="sidebar__session-name">{entry.name}</FadeText>
+                                <button
+                                  type="button"
+                                  className="sidebar__session-restart"
+                                  title="Force restart host"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setPendingRestart({
+                                      sessionId: entry.sessionId,
+                                      name: entry.name,
+                                      returnFocus: e.currentTarget,
+                                    });
+                                  }}
+                                  onKeyDown={(e) => e.stopPropagation()}
+                                >
+                                  <IconRestart />
+                                </button>
                                 <button
                                   type="button"
                                   className="sidebar__session-archive"
@@ -872,6 +922,26 @@ export function Sidebar({
         </button>
       </div>
 
+      {pendingRestart && (
+        <ConfirmDialog
+          title="Force restart host?"
+          subject={pendingRestart.name}
+          message="Immediately kill this session’s host and start a new one. Running work will be interrupted. Saved conversation history remains on disk."
+          icon={<IconRestart />}
+          tone="danger"
+          initialFocus="cancel"
+          returnFocus={pendingRestart.returnFocus}
+          confirmLabel="Force restart"
+          onConfirm={() => {
+            const target = pendingRestart;
+            // Keep emergency recovery reachable even if the successor hangs
+            // during startup. Status follows main; failures surface as a toast.
+            setPendingRestart(null);
+            void forceRestartSession(target.sessionId);
+          }}
+          onCancel={() => setPendingRestart(null)}
+        />
+      )}
       {pendingArchive && (
         <ConfirmDialog
           title="Archive session?"

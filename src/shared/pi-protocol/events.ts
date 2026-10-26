@@ -122,6 +122,7 @@ export const AgentEndEventSchema = z.object({
 // consumers retain agent_end for historical event compatibility.
 export const AgentSettledEventSchema = z.object({
   type: z.literal("agent_settled"),
+  aborted: z.boolean().optional(),
 });
 
 export const TurnStartEventSchema = z.object({
@@ -160,7 +161,7 @@ export const ToolExecutionStartEventSchema = z.object({
   type: z.literal("tool_execution_start"),
   toolCallId: z.string(),
   toolName: z.string(),
-  args: z.unknown(),
+  args: z.unknown().optional(),
   /** Present when a tool invokes another tool through ctx.executeTool(). */
   parentToolCallId: z.string().optional(),
 });
@@ -169,8 +170,8 @@ export const ToolExecutionUpdateEventSchema = z.object({
   type: z.literal("tool_execution_update"),
   toolCallId: z.string(),
   toolName: z.string(),
-  args: z.unknown(),
-  partialResult: z.unknown(),
+  args: z.unknown().optional(),
+  partialResult: z.unknown().optional(),
   parentToolCallId: z.string().optional(),
 });
 
@@ -178,8 +179,10 @@ export const ToolExecutionEndEventSchema = z.object({
   type: z.literal("tool_execution_end"),
   toolCallId: z.string(),
   toolName: z.string(),
-  result: z.unknown(),
+  result: z.unknown().optional(),
   isError: z.boolean(),
+  /** Monotonic tool execution time, excluding extension hooks (Pi 1.1+). */
+  durationMs: z.number().finite().nonnegative().optional(),
   parentToolCallId: z.string().optional(),
 });
 

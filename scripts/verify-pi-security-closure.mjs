@@ -6,24 +6,21 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 export const PINNED_PI_PACKAGE = "@earendil-works/pi-coding-agent";
-export const PINNED_PI_VERSION = "1.0.0";
+export const PINNED_PI_VERSION = "1.4.0";
 export const PINNED_MINIMATCH_VERSION = "10.2.6";
 export const PUBLISHED_BRACE_EXPANSION_VERSION = "5.0.9";
 export const SAFE_BRACE_EXPANSION_VERSION = "5.0.12";
+export const SAFE_UNDICI_VERSION = "8.12.2";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PI_LOCK_LOCATION = "node_modules/@earendil-works/pi-coding-agent";
 const PI_TARBALL =
-  "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.0.0.tgz";
+  "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.4.0.tgz";
 const PI_INTEGRITY =
-  "sha512-/FtbxoSQU/mEv1QnichJjRjqteqaIaMWxmhB4G367+MwZfX7/DI5B9YAg5lqbN7nztFskBEtUSZ+FlmMBECtMw==";
+  "sha512-Z41LpZ3yYHSC/UUps6Mr39UMFPwH8elhJBG9DY1P7kuzsE5qSK/6eMj2EHzO5evJRQWLbKSqUMw+4nCNtIyiQg==";
 const MINIMATCH_TARBALL = "https://registry.npmjs.org/minimatch/-/minimatch-10.2.6.tgz";
 const MINIMATCH_INTEGRITY =
   "sha512-vpLQEs+VLCr1nU0BXS07maYoFwlDAH0gngQuuttxIwutDFEMHq2blX+8vpgxDdK3J1PwjCJiep77OitTZ4Ll1A==";
-const PUBLISHED_BRACE_EXPANSION_TARBALL =
-  "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.9.tgz";
-const PUBLISHED_BRACE_EXPANSION_INTEGRITY =
-  "sha512-ScQ4IuvIEF1TMlP7Zt+vjJ//9zlPb2SDcxWxM3bk8s6t6GGdJ7KO1dCcTidOPJKePW30LE/2cT7wCyPho9/Wxg==";
 const SAFE_BRACE_EXPANSION_TARBALL =
   "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.12.tgz";
 const SAFE_BRACE_EXPANSION_INTEGRITY =
@@ -122,6 +119,18 @@ function verifyRootLockPolicy(projectRoot) {
     `Locked root ${PINNED_PI_PACKAGE} dependency`,
   );
 
+  for (const [requested, safe] of [
+    ["8.10.2", SAFE_UNDICI_VERSION],
+    ["7.30.0", "7.30.1"],
+    ["6.29.0", "6.29.1"],
+  ]) {
+    requireEqual(
+      manifest?.overrides?.[`undici@${requested}`],
+      safe,
+      `Root undici@${requested} security override`,
+    );
+  }
+
   const lockedPi = requireLockPackage(lock, PI_LOCK_LOCATION, `Locked ${PINNED_PI_PACKAGE}`);
   requireEqual(lockedPi.version, PINNED_PI_VERSION, `Locked ${PINNED_PI_PACKAGE} version`);
   requireEqual(lockedPi.resolved, PI_TARBALL, `Locked ${PINNED_PI_PACKAGE} tarball`);
@@ -136,6 +145,25 @@ function verifyRootLockPolicy(projectRoot) {
       `Locked ${PINNED_PI_PACKAGE} must omit hasShrinkwrap so the audited root lock remains authoritative.`,
     );
   }
+
+  const { entry: lockedUndici } = resolveLockedDependency(
+    lock,
+    PI_LOCK_LOCATION,
+    "undici",
+    "Locked Pi undici",
+  );
+  requireEqual(lockedUndici.version, SAFE_UNDICI_VERSION, "Locked Pi undici version");
+  requireEqual(
+    lockedUndici.resolved,
+    "https://registry.npmjs.org/undici/-/undici-8.12.2.tgz",
+    "Locked Pi undici tarball",
+  );
+  requireEqual(
+    lockedUndici.integrity,
+    "sha512-XtuDWVdqTLr3NAxm2ly9/hU6kUsJOgGh1RASzMBbsw6aWCOaQzHdW+QQDfdERjfJ2V5vL5pRPa4RetO9UfivDg==",
+    "Locked Pi undici integrity",
+  );
+  requireProductionLockEntry(lockedUndici, "Locked Pi undici");
 
   const { entry: lockedMinimatch, location: lockedMinimatchLocation } = resolveLockedDependency(
     lock,
@@ -177,55 +205,17 @@ function verifyRootLockPolicy(projectRoot) {
   requireProductionLockEntry(lockedBraceExpansion, "Locked Pi brace-expansion");
 }
 
-function verifyPublishedPiShrinkwrap(piPackageDirectory) {
-  const shrinkwrap = readJson(
-    path.join(piPackageDirectory, "npm-shrinkwrap.json"),
-    `published ${PINNED_PI_PACKAGE} shrinkwrap`,
-  );
-  requireEqual(shrinkwrap.lockfileVersion, 3, "Published Pi shrinkwrap format");
-
-  const root = requireLockPackage(shrinkwrap, "", "Published Pi shrinkwrap root");
-  requireEqual(root.name, PINNED_PI_PACKAGE, "Published Pi shrinkwrap package name");
-  requireEqual(root.version, PINNED_PI_VERSION, "Published Pi shrinkwrap package version");
+function verifyPublishedPiManifest(piPackageDirectory) {
+  // Pi removed its published shrinkwrap in 1.0.1 and pins the safe brace
+  // dependency itself. A stale shrinkwrap must never regain authority.
+  if (fs.existsSync(path.join(piPackageDirectory, "npm-shrinkwrap.json"))) {
+    throw new Error("Published Pi must not contain npm-shrinkwrap.json.");
+  }
+  const manifest = readJson(path.join(piPackageDirectory, "package.json"), "published Pi manifest");
   requireEqual(
-    root.dependencies?.minimatch,
-    PINNED_MINIMATCH_VERSION,
-    "Published Pi shrinkwrap minimatch dependency",
-  );
-
-  const minimatch = requireLockPackage(
-    shrinkwrap,
-    "node_modules/minimatch",
-    "Published Pi shrinkwrap minimatch",
-  );
-  requireEqual(minimatch.version, PINNED_MINIMATCH_VERSION, "Published Pi minimatch version");
-  requireEqual(minimatch.resolved, MINIMATCH_TARBALL, "Published Pi minimatch tarball");
-  requireEqual(minimatch.integrity, MINIMATCH_INTEGRITY, "Published Pi minimatch integrity");
-  requireEqual(
-    minimatch.dependencies?.["brace-expansion"],
-    "^5.0.8",
-    "Published Pi minimatch brace-expansion range",
-  );
-
-  const braceExpansion = requireLockPackage(
-    shrinkwrap,
-    "node_modules/brace-expansion",
-    "Published Pi shrinkwrap brace-expansion",
-  );
-  requireEqual(
-    braceExpansion.version,
-    PUBLISHED_BRACE_EXPANSION_VERSION,
-    "Published Pi brace-expansion version",
-  );
-  requireEqual(
-    braceExpansion.resolved,
-    PUBLISHED_BRACE_EXPANSION_TARBALL,
-    "Published Pi brace-expansion tarball",
-  );
-  requireEqual(
-    braceExpansion.integrity,
-    PUBLISHED_BRACE_EXPANSION_INTEGRITY,
-    "Published Pi brace-expansion integrity",
+    manifest.dependencies?.["brace-expansion"],
+    SAFE_BRACE_EXPANSION_VERSION,
+    "Published Pi brace-expansion dependency",
   );
 }
 
@@ -313,12 +303,23 @@ export function verifyResolvedPiBraceExpansion({ piPackageDirectory, allowedModu
     "Pi/minimatch-resolved brace-expansion version",
   );
 
+  const undiciManifestPath = requireWithinModulesRoot(
+    createRequire(resolvedPiManifestPath).resolve("undici/package.json"),
+    resolvedModulesRoot,
+    "Pi-resolved undici manifest",
+  );
+  const undiciManifest = readJson(undiciManifestPath, "Pi-resolved undici manifest");
+  requireEqual(undiciManifest.name, "undici", "Pi-resolved undici package name");
+  requireEqual(undiciManifest.version, SAFE_UNDICI_VERSION, "Pi-resolved undici version");
+
   return {
     piPackageDirectory,
     minimatchManifestPath,
     minimatchVersion: minimatchManifest.version,
     braceExpansionManifestPath,
     braceExpansionVersion: braceExpansionManifest.version,
+    undiciManifestPath,
+    undiciVersion: undiciManifest.version,
   };
 }
 
@@ -327,7 +328,7 @@ export function verifyInstalledPiSecurityClosure({
   piPackageDirectory = path.join(projectRoot, "node_modules", "@earendil-works", "pi-coding-agent"),
 } = {}) {
   verifyRootLockPolicy(projectRoot);
-  verifyPublishedPiShrinkwrap(piPackageDirectory);
+  verifyPublishedPiManifest(piPackageDirectory);
   return verifyResolvedPiBraceExpansion({
     piPackageDirectory,
     allowedModulesRoot: path.join(projectRoot, "node_modules"),

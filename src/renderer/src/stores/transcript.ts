@@ -100,6 +100,7 @@ export interface ToolCallBlockData {
   resultDetails?: unknown;
   resultMetadata?: Record<string, unknown> | undefined;
   usage?: PiUsage | undefined;
+  durationMs?: number | undefined;
   isError: boolean;
   isStreaming: boolean;
   interrupted?: boolean | undefined;
@@ -516,6 +517,10 @@ export function mapHistoryBlocks(history: TranscriptBlock[]): TypedTranscriptBlo
             resultDetails: d.resultDetails,
             resultMetadata: isUnknownRecord(d.resultMetadata) ? d.resultMetadata : undefined,
             usage: d.usage as PiUsage | undefined,
+            durationMs:
+              typeof d.durationMs === "number" && Number.isFinite(d.durationMs) && d.durationMs >= 0
+                ? d.durationMs
+                : undefined,
             isError: (d.isError as boolean) ?? false,
             // History is an idle baseline, so a persisted streaming claim is
             // an interrupted operation rather than a live tool call.
@@ -1355,6 +1360,7 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
                         result.metadata,
                       ),
                       usage: result.usage ?? block.data.usage,
+                      durationMs: result.durationMs ?? block.data.durationMs,
                       isError:
                         typeof message.isError === "boolean" ? message.isError : block.data.isError,
                     },
@@ -1382,6 +1388,7 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
                 resultDetails: result.details,
                 resultMetadata: result.metadata,
                 usage: result.usage,
+                durationMs: result.durationMs,
                 isError: message.isError === true,
                 isStreaming: false,
               },
@@ -1746,6 +1753,7 @@ export function applyPiEvent(state: TranscriptState, event: KnownPiEvent): Trans
               ),
               resultMetadata: mergeResultMetadata(b.data.resultMetadata, result.metadata),
               usage: result.usage ?? b.data.usage,
+              durationMs: event.durationMs ?? result.durationMs ?? b.data.durationMs,
             },
           };
         }),

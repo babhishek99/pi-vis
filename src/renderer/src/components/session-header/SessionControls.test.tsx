@@ -165,6 +165,28 @@ describe("SessionControls dropdown toggles", () => {
     unmount();
   });
 
+  it("fences model and thinking controls while ordered predecessor outcomes remain following", () => {
+    setSession();
+    act(() => {
+      useSessionsStore.setState((state) => {
+        const sessions = new Map(state.sessions);
+        sessions.set(sessionId, { ...sessions.get(sessionId)!, availability: "transitioning" });
+        return { sessions };
+      });
+    });
+    const { container, unmount } = mount(<SessionControls sessionId={sessionId} />);
+    const model = container.querySelector<HTMLButtonElement>(".session-header__model-btn")!;
+    const thinking = container.querySelector<HTMLButtonElement>(
+      ".session-header__thinking > .session-header__picker-btn",
+    )!;
+    expect(model.disabled).toBe(true);
+    expect(thinking.disabled).toBe(true);
+    pointerClick(model);
+    pointerClick(thinking);
+    expect(container.querySelector(".session-header__dropdown")).toBeNull();
+    unmount();
+  });
+
   it("closes the open thinking dropdown when its trigger is clicked again", () => {
     setSession();
     const { container, unmount } = mount(<SessionControls sessionId={sessionId} />);

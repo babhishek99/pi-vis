@@ -18,6 +18,7 @@ import {
   type AuthorityFrame,
   type EscapeResult,
   type IntentEnvelope,
+  type IntentOutcome,
   type IntentReceipt,
   type QueueRestorationRecord,
   QueueRestorationRecordSchema,
@@ -97,6 +98,16 @@ interface RetainedDispatchIntent {
   restorationResolution?: Promise<RestorationDisposition> | undefined;
 }
 
+interface PendingDefaultSelection {
+  proc: SessionHost;
+  before: Promise<void>;
+  done: Promise<void>;
+  resolve: () => void;
+  pendingReceipts: number;
+  possibleAdmission: boolean;
+  ownsEscrow: boolean;
+}
+
 interface PendingUnifiedSubmit {
   id: string;
   text: string;
@@ -111,6 +122,8 @@ interface PendingUnifiedSubmit {
   claimExpiresAt?: number | undefined;
   /** Child dispatch crossed main's atomic expiry fence and now owns settlement. */
   dispatchStarted?: boolean | undefined;
+  /** Main owns this source, but no child command can run before saved defaults settle. */
+  dispatchWaitingForDefaults?: boolean | undefined;
 }
 
 interface PendingEditorSuccessor {
@@ -209,6 +222,7 @@ export interface SessionRecord {
   _restartTimer?: ReturnType<typeof setTimeout> | undefined;
   /** Planned predecessor shutdown that must settle before another host can own this record. */
   _retiringHost?: Promise<void> | undefined;
+  _retiringProcesses?: Set<SessionHost> | undefined;
   /** Distinguishes a pre-ready retry failure from one already counted by host failure handling. */
   _automaticRestartAttempt?: { failureAccounted: boolean } | undefined;
   _dead?: boolean | undefined;
@@ -354,6 +368,13 @@ function commandForSessionQuery(query: SessionQuery): PiReadOnlyCommand {
         cols: query.cols,
         ...(query.expanded !== undefined ? { expanded: query.expanded } : {}),
       };
+    case "render_tool":
+      return {
+        type: "render_tool",
+        toolCallId: query.toolCallId,
+        cols: query.cols,
+        ...(query.expanded !== undefined ? { expanded: query.expanded } : {}),
+      };
     case "transform_markdown":
       return { type: "transform_markdown", items: query.items };
   }
@@ -402,6 +423,10 @@ export class SessionRegistry {
   private sessions = new Map<SessionId, SessionRecord>();
   private byFile = new Map<string, SessionId>();
   private stopAllPromise: Promise<void> | null = null;
+  /** Fresh hosts must read defaults only after earlier selection writes settle. */
+  private defaultSelections = new Map<string, PendingDefaultSelection>();
+  private settledDefaultSelections = new WeakMap<SessionHost, Set<string>>();
+  private defaultSelectionTail: Promise<void> = Promise.resolve();
 
   constructor(
     private onEvent: SessionEventCallback,
@@ -783,7 +808,28 @@ export class SessionRegistry {
       }
     }
     const sessionId = newSessionId();
-    const record: SessionRecord = {
+    const record = this.createRecord(
+      sessionId,
+      workspacePath,
+      sessionFile,
+      worktreePath,
+      confinedSessionDescriptor,
+      confinedSessionRoot,
+    );
+    this.sessions.set(sessionId, record);
+    if (sessionFile) this.byFile.set(path.resolve(sessionFile), sessionId);
+    return sessionId;
+  }
+
+  private createRecord(
+    sessionId: SessionId,
+    workspacePath: string,
+    sessionFile?: string,
+    worktreePath?: string,
+    confinedSessionDescriptor?: number,
+    confinedSessionRoot?: string,
+  ): SessionRecord {
+    return {
       sessionId,
       workspacePath,
       worktreePath,
@@ -824,9 +870,6 @@ export class SessionRegistry {
       _panelCheckpoints: new Map(),
       _pendingUiAcks: new Map(),
     };
-    this.sessions.set(sessionId, record);
-    if (sessionFile) this.byFile.set(path.resolve(sessionFile), sessionId);
-    return sessionId;
   }
 
   async activateSession(
@@ -834,6 +877,7 @@ export class SessionRegistry {
     piPath: string,
     env?: Record<string, string> | Promise<Record<string, string>>,
     activationVisitId?: string,
+    bypassDefaultSelections = false,
   ): Promise<void> {
     if (this.stopAllPromise) throw new Error("Session registry is shutting down");
     const record = this.sessions.get(sessionId);
@@ -940,6 +984,14 @@ export class SessionRegistry {
       const runtimeResumeState = record._runtimeResumeCheckpoint
         ? structuredClone(record._runtimeResumeCheckpoint.state)
         : undefined;
+      if (!bypassDefaultSelections && !record.sessionFile && !runtimeResumeState) {
+        while (this.defaultSelections.size > 0) {
+          await Promise.all(
+            [...this.defaultSelections.values()].map((selection) => selection.done),
+          );
+          if (record._dead || this.sessions.get(sessionId) !== record) return;
+        }
+      }
       const proc = new SessionHost(
         piPath,
         record.worktreePath ?? record.workspacePath,
@@ -995,6 +1047,7 @@ export class SessionRegistry {
       if (record.proc === failedProc) record.proc = undefined;
       if (failedProc) await this.retireHost(record, failedProc);
       else await record._retiringHost;
+      if (record._dead || this.sessions.get(sessionId) !== record) return;
       record._procReady = false;
       record.status = "failed";
       record.error = message;
@@ -1005,6 +1058,7 @@ export class SessionRegistry {
         record._activationVisitReleaseCancelled = undefined;
       }
       await this.releaseLock(record);
+      if (record._dead || this.sessions.get(sessionId) !== record) return;
       this.onStatusChanged(sessionId, "failed", message);
       this.publishUnavailable(record, message);
       throw error;
@@ -1622,6 +1676,15 @@ export class SessionRegistry {
       }
     }
     this.onTransitionBatch(record.sessionId, batch.records, state);
+    if (
+      options.expectedTransition !== undefined &&
+      this.sessions.get(record.sessionId) === record
+    ) {
+      // Authority frames cannot restore main-owned transport availability.
+      // Publish the committed successor independently of the legacy batch so
+      // quiet replacements do not wait for a later host heartbeat to attach.
+      this.onRuntimeState(record.sessionId, state);
+    }
     return true;
   }
 
@@ -1659,7 +1722,8 @@ export class SessionRegistry {
       ...(record.leaseExpiresAt ? { leaseExpiresAt: record.leaseExpiresAt } : {}),
       ...(reason ? { reason } : {}),
     };
-    if (notify) this.onRuntimeState(record.sessionId, state);
+    if (notify && this.sessions.get(record.sessionId) === record)
+      this.onRuntimeState(record.sessionId, state);
     return state;
   }
 
@@ -2058,9 +2122,11 @@ export class SessionRegistry {
    * main: it cannot interpret result/error/state or manufacture completion.
    */
   private settleDispatchEscrowFromFrame(record: SessionRecord, frame: AuthorityFrame): void {
+    this.settleDefaultSelections(frame.terminalSnapshot?.recentIntentOutcomes ?? []);
     for (const item of frame.records) {
       if (item.type !== "intent_outcome") continue;
       const outcome = item.outcome;
+      this.settleDefaultSelections([outcome]);
       const escrowKey = `${outcome.owner.hostInstanceId}\0${outcome.owner.sessionEpoch}\0${outcome.intentId}`;
       const retained = record._retainedDispatchIntents.get(escrowKey);
       if (!retained) continue;
@@ -2073,6 +2139,36 @@ export class SessionRegistry {
         record._retainedDispatchIntents.delete(escrowKey);
       }
     }
+  }
+
+  private settleDefaultSelections(outcomes: IntentOutcome[]): void {
+    for (const outcome of outcomes) {
+      const key = `${outcome.owner.hostInstanceId}\0${outcome.owner.sessionEpoch}\0${outcome.intentId}`;
+      const selection = this.defaultSelections.get(key);
+      if (selection) {
+        this.defaultSelections.delete(key);
+        const settled = this.settledDefaultSelections.get(selection.proc) ?? new Set<string>();
+        settled.add(key);
+        this.settledDefaultSelections.set(selection.proc, settled);
+        selection.resolve();
+      }
+    }
+  }
+
+  private settleDefaultSelectionReceipt(
+    key: string,
+    selection: PendingDefaultSelection,
+    notAdmitted: boolean,
+  ): boolean {
+    if (this.defaultSelections.get(key) !== selection) return false;
+    selection.pendingReceipts--;
+    // A transient pre-ledger refusal can race an admitted retry of the same
+    // ID. Only the whole transport group can prove that no write is possible.
+    if (!notAdmitted) selection.possibleAdmission = true;
+    if (selection.pendingReceipts > 0 || selection.possibleAdmission) return false;
+    this.defaultSelections.delete(key);
+    selection.resolve();
+    return selection.ownsEscrow;
   }
 
   private publishDispatchFailureEscrow(
@@ -2163,9 +2259,17 @@ export class SessionRegistry {
   }
 
   private retireHost(record: SessionRecord, proc: SessionHost): Promise<void> {
+    record._retiringProcesses ??= new Set();
+    record._retiringProcesses.add(proc);
     const retirement = proc.stop();
     record._retiringHost = retirement;
     void retirement.then(() => {
+      record._retiringProcesses?.delete(proc);
+      for (const [key, selection] of this.defaultSelections) {
+        if (selection.proc !== proc) continue;
+        this.defaultSelections.delete(key);
+        selection.resolve();
+      }
       if (record._retiringHost === retirement) record._retiringHost = undefined;
     });
     return retirement;
@@ -2496,6 +2600,7 @@ export class SessionRegistry {
         !pendingUnified.claimId ||
         (pendingUnified.claimExpiresAt ?? 0) <= Date.now() ||
         pendingUnified.dispatchStarted === true ||
+        pendingUnified.dispatchWaitingForDefaults === true ||
         pendingUnified.hostInstanceId !== envelope.expectedOwner.hostInstanceId ||
         pendingUnified.sessionEpoch !== envelope.expectedOwner.sessionEpoch ||
         !this.unifiedDispatchMatchesSource(pendingUnified, envelope)
@@ -2513,54 +2618,171 @@ export class SessionRegistry {
           );
         }
         const receipt = notAdmitted("invalid");
-        if (pendingUnified && record.proc) {
+        if (
+          pendingUnified &&
+          record.proc &&
+          !pendingUnified.dispatchStarted &&
+          !pendingUnified.dispatchWaitingForDefaults
+        ) {
           this.settleUnifiedDispatchReceipt(record, pendingUnified, record.proc, receipt);
         }
         return receipt;
       }
-      // JS run-to-completion makes this the atomic claim→dispatch boundary:
-      // clear the deadline before the first child await. Expiry can no longer
-      // classify an in-flight dispatch as ambiguous.
-      pendingUnified.dispatchStarted = true;
+      // Main owns claim settlement from this point. A /new default wait is
+      // still provably before child IPC, including if its owner dies meanwhile.
+      if (envelope.intent.kind === "invokeCommand" && envelope.intent.text === "/new") {
+        pendingUnified.dispatchWaitingForDefaults = true;
+      } else {
+        pendingUnified.dispatchStarted = true;
+      }
       this.clearUnifiedClaimTimer(record, pendingUnified.id);
     }
 
     this.markActivationVisitInteracted(record);
     const proc = record.proc;
+    const pendingUnifiedClaimId = pendingUnified?.claimId;
     const escrowKey = `${envelope.expectedOwner.hostInstanceId}\0${envelope.expectedOwner.sessionEpoch}\0${envelope.intentId}`;
+    let selection = this.defaultSelections.get(escrowKey);
+    let insertedSelection: PendingDefaultSelection | undefined;
+    if (
+      (envelope.intent.kind === "setModel" || envelope.intent.kind === "setThinking") &&
+      envelope.intent.persist !== false &&
+      !selection &&
+      !this.settledDefaultSelections.get(proc)?.has(escrowKey)
+    ) {
+      const before = this.defaultSelectionTail;
+      let finish!: () => void;
+      const done = new Promise<void>((settled) => {
+        finish = settled;
+      });
+      insertedSelection = {
+        proc,
+        before,
+        done,
+        pendingReceipts: 0,
+        possibleAdmission: false,
+        ownsEscrow: false,
+        // A queued owner can retire before its predecessor has settled. Keep
+        // that earlier write in the causal prefix for every later selection.
+        resolve: () => void before.then(finish),
+      };
+      this.defaultSelections.set(escrowKey, insertedSelection);
+      this.defaultSelectionTail = done;
+      selection = insertedSelection;
+    }
+    const beforeDefaults =
+      selection?.before ??
+      (envelope.intent.kind === "invokeCommand" && envelope.intent.text === "/new"
+        ? this.defaultSelectionTail
+        : undefined);
+    if (beforeDefaults) {
+      // Identical/conflicting retries share this predecessor dependency, never
+      // their own completion promise. The original crosses child IPC first.
+      // A fresh runtime inside an existing host observes the same saved prefix.
+      await beforeDefaults;
+      const latest = this.sessions.get(sessionId);
+      let refusal: Extract<IntentReceipt, { status: "not_admitted" }>["reason"] | undefined;
+      if (
+        latest !== record ||
+        latest.proc !== proc ||
+        proc.hostInstanceId !== envelope.expectedOwner.hostInstanceId ||
+        proc.sessionEpoch !== envelope.expectedOwner.sessionEpoch
+      ) {
+        refusal = "stale_owner";
+      } else if (latest._closing || latest._dead) {
+        refusal = "closing";
+      } else if (envelope.rendererGeneration !== latest._rendererGeneration) {
+        refusal = "invalid";
+      } else if (
+        sourceBoundUnifiedIntent &&
+        (!pendingUnified ||
+          latest._pendingUnifiedSubmits.get(pendingUnified.id) !== pendingUnified ||
+          pendingUnified.claimId !== pendingUnifiedClaimId ||
+          pendingUnified.claimedGeneration !== envelope.rendererGeneration)
+      ) {
+        refusal = "invalid";
+      } else if (latest._hostTransition || latest.availability === "transitioning") {
+        refusal = "transitioning";
+      } else if (
+        !latest._procReady ||
+        latest.status !== "ready" ||
+        latest.availability !== "available"
+      ) {
+        refusal = "transport_unavailable";
+      }
+      if (refusal) {
+        if (insertedSelection && this.defaultSelections.get(escrowKey) === insertedSelection) {
+          this.defaultSelections.delete(escrowKey);
+          insertedSelection.resolve();
+        }
+        const receipt = notAdmitted(refusal);
+        if (pendingUnified)
+          this.settleUnifiedDispatchReceipt(record, pendingUnified, proc, receipt);
+        return receipt;
+      }
+    }
     // Install this before invoking child IPC: a send can cross the child
     // boundary before its acknowledgement is lost.
-    const retained: RetainedDispatchIntent = {
+    const priorEscrow = record._retainedDispatchIntents.get(escrowKey);
+    const retained: RetainedDispatchIntent = priorEscrow ?? {
       envelope: structuredClone(envelope),
       possibleDispatch: true,
       sessionFileOffsetAtDispatch: this.sessionFileOffset(record),
     };
     record._retainedDispatchIntents.set(escrowKey, retained);
+    const dispatchSelection =
+      selection && this.defaultSelections.get(escrowKey) === selection ? selection : undefined;
+    if (dispatchSelection) {
+      dispatchSelection.pendingReceipts++;
+      if (!priorEscrow) dispatchSelection.ownsEscrow = true;
+    }
     record._mutationSequence++;
     const {
       sessionId: _sessionId,
       rendererGeneration: _rendererGeneration,
       ...childEnvelope
     } = envelope;
+    if (pendingUnified?.dispatchWaitingForDefaults) {
+      pendingUnified.dispatchWaitingForDefaults = false;
+      pendingUnified.dispatchStarted = true;
+    }
     try {
       // SessionHost deliberately has a transport-only receipt shape; this
       // shared cast preserves the renderer IPC contract without inspecting the
       // child-owned semantic payload.
       const receipt = (await proc.dispatchIntent(childEnvelope)) as IntentReceipt;
       if (pendingUnified) this.settleUnifiedDispatchReceipt(record, pendingUnified, proc, receipt);
+      const releaseSelectionEscrow = dispatchSelection
+        ? this.settleDefaultSelectionReceipt(
+            escrowKey,
+            dispatchSelection,
+            receipt.status === "not_admitted",
+          )
+        : false;
       if (receipt.status === "delivery_unknown") {
         retained.deliveryUnknown = true;
         return receipt;
       }
       // A receipt proves only admission/deduplication. Keep owner-bound
       // transport escrow until the matching terminal authority frame arrives.
-      // `not_admitted` is the only receipt that proves no child outcome exists.
-      if (receipt.status === "not_admitted") record._retainedDispatchIntents.delete(escrowKey);
+      // All concurrent sends must prove `not_admitted` before that shared ID
+      // loses custody; any possible admission still needs a terminal outcome.
+      if (receipt.status === "not_admitted") {
+        if (
+          (releaseSelectionEscrow || (!selection && !priorEscrow)) &&
+          record._retainedDispatchIntents.get(escrowKey) === retained
+        ) {
+          record._retainedDispatchIntents.delete(escrowKey);
+        }
+      }
       return receipt;
     } catch {
       // Never retry or reinterpret a possible dispatch. Keep owner-scoped
       // evidence so it cannot silently migrate to a replacement host.
       retained.deliveryUnknown = true;
+      if (dispatchSelection) {
+        this.settleDefaultSelectionReceipt(escrowKey, dispatchSelection, false);
+      }
       const receipt: IntentReceipt = {
         status: "delivery_unknown",
         intentId: envelope.intentId,
@@ -3032,6 +3254,40 @@ export class SessionRegistry {
     sendHostResponse: boolean,
   ): void {
     this.clearUnifiedClaimTimer(record, pending.id);
+    if (pending.dispatchWaitingForDefaults) {
+      const restoration: RuntimeRecord & { type: "queue_restoration" } = {
+        type: "queue_restoration",
+        restorationId: `interrupted-unified:${pending.id}`,
+        steering: [],
+        followUp: [],
+        originalAttachments: [],
+        clearedIntentIds: [pending.submissionIntentId],
+        commandDescription:
+          "New session was cancelled before dispatch; submitted input was not restored.",
+        certainty: "not_processed",
+      };
+      record._restorations.set(restoration.restorationId, structuredClone(restoration));
+      const resolution = this.restorationResolution(record, restoration);
+      this.fenceEditorRecoveryOnRestoration(record, pending.editorRevision, resolution);
+      record._retiredUnifiedRequests.add(
+        `${pending.hostInstanceId}\0${pending.sessionEpoch}\0${pending.id}`,
+      );
+      if (
+        sendHostResponse &&
+        record.proc?.hostInstanceId === pending.hostInstanceId &&
+        record.proc.sessionEpoch === pending.sessionEpoch
+      ) {
+        record.proc.sendUnifiedSubmitResponse(
+          pending.id,
+          false,
+          true,
+          restoration.commandDescription,
+        );
+      }
+      record._pendingUnifiedSubmits.delete(pending.id);
+      record._mutationSequence++;
+      return;
+    }
     const restorationId = `ambiguous-unified:${pending.id}`;
     const outcomeMessage = `${message}. Submitted input was not restored.`;
     if (!record._restorations.has(restorationId)) {
@@ -3110,7 +3366,8 @@ export class SessionRegistry {
       !pending ||
       pending.claimId !== claimId ||
       pending.claimedGeneration !== claimedGeneration ||
-      pending.dispatchStarted === true
+      pending.dispatchStarted === true ||
+      pending.dispatchWaitingForDefaults === true
     )
       return;
     this.retireUnifiedAsAmbiguous(
@@ -3264,6 +3521,7 @@ export class SessionRegistry {
     // not a delivery acknowledgement; the child retains every item until the
     // renderer later calls acknowledgeRestoration.
     if (response.status === "ready") {
+      this.settleDefaultSelections(response.baseline.semantic.snapshot?.recentIntentOutcomes ?? []);
       for (const panel of response.baseline.panels) {
         this.advancePanelInputWatermark(
           record,
@@ -3611,7 +3869,9 @@ export class SessionRegistry {
     if (!record || !pending) return { accepted: false };
     // Exact child dispatch moves source acknowledgement to main's receipt
     // boundary. A delayed renderer completion cannot race that settlement.
-    if (pending.dispatchStarted === true) return { accepted: false };
+    if (pending.dispatchStarted === true || pending.dispatchWaitingForDefaults === true) {
+      return { accepted: false };
+    }
     const claimMatches =
       pending.claimedGeneration === claim.rendererGeneration &&
       pending.claimId === claim.claimId &&
@@ -4838,6 +5098,87 @@ export class SessionRegistry {
     }
   }
 
+  /** User-requested emergency restart deliberately bypasses child admission. */
+  async forceRestartSession(
+    sessionId: SessionId,
+    piPath: string,
+    env?: Record<string, string> | Promise<Record<string, string>>,
+  ): Promise<void> {
+    const predecessor = this.sessions.get(sessionId);
+    if (!predecessor) throw new Error(`Unknown session: ${sessionId}`);
+    if (this.stopAllPromise) throw new Error("Session registry is shutting down");
+
+    // Fence every predecessor continuation before the synchronous kill. A fresh
+    // record lets startup, reload, close, and worktree promises finish harmlessly
+    // without queuing this emergency action behind any of them.
+    predecessor._dead = true;
+    predecessor._closing = true;
+    if (predecessor._restartTimer) clearTimeout(predecessor._restartTimer);
+    predecessor._restartTimer = undefined;
+    predecessor._automaticRestartAttempt = undefined;
+    const proc = predecessor.proc;
+    const hosts = new Set(predecessor._retiringProcesses);
+    if (proc) hosts.add(proc);
+    const exits = [...hosts].map((host) => host.forceStop());
+    if (proc) this.handleRuntimeFailure(predecessor, proc, "Host forcibly restarted");
+    else this.retireHostUi(predecessor);
+    for (const timer of predecessor._unifiedClaimTimers.values()) clearTimeout(timer);
+    predecessor._unifiedClaimTimers.clear();
+
+    const successor = this.createRecord(
+      sessionId,
+      predecessor.workspacePath,
+      predecessor.sessionFile,
+      predecessor.worktreePath,
+    );
+    successor._initialWorktreeEligible = predecessor._initialWorktreeEligible;
+    successor._rendererGeneration = predecessor._rendererGeneration;
+    successor._runtimeResumeCheckpoint = predecessor._runtimeResumeCheckpoint;
+    successor._editorRecovery = predecessor._editorRecovery;
+    successor._editorClearedThroughRevision = predecessor._editorClearedThroughRevision;
+    // Emergency restart must never wait for an old host's reconciliation.
+    // A source already cleared is irreversibly absent from editor presentation.
+    if (
+      predecessor._editorRecoveryReconciliation &&
+      successor._editorRecovery &&
+      (successor._editorRecovery.revision <= (successor._editorClearedThroughRevision ?? -1) ||
+        (successor._editorRecovery.text === "" &&
+          successor._editorRecovery.attachments.length === 0))
+    ) {
+      successor._editorRecovery = this.editorRecoveryWithoutDeliveredPrimary(
+        successor._editorRecovery,
+      );
+    }
+    successor._retainedIntents = new Map(predecessor._retainedIntents);
+    successor._retainedDispatchIntents = new Map(predecessor._retainedDispatchIntents);
+    successor._restorations = new Map(predecessor._restorations);
+    successor._resolvedRestorations = new Set(predecessor._resolvedRestorations);
+    successor._resolvedRestorationInstructions = new Map(
+      predecessor._resolvedRestorationInstructions,
+    );
+    // Keep router sequence/generation monotonic while changing its authority.
+    successor._authorityPublications = predecessor._authorityPublications;
+    this.sessions.set(sessionId, successor);
+    this.onPanelEvent(sessionId, { type: "panel_clear_all" });
+    this.onPanelEvent(sessionId, { type: "unified_panel_reset" });
+    const retirement = (async () => {
+      await Promise.all([...exits, ...predecessor._lockSettlements, predecessor._retiringHost]);
+      await this.releaseLock(predecessor);
+      // Transfer confinement only after every predecessor has stopped using it.
+      successor._confinedSessionDescriptor = predecessor._confinedSessionDescriptor;
+      successor._confinedSessionRoot = predecessor._confinedSessionRoot;
+      successor._confinedSessionAlias = predecessor._confinedSessionAlias;
+      predecessor._confinedSessionDescriptor = undefined;
+      predecessor._confinedSessionRoot = undefined;
+      predecessor._confinedSessionAlias = undefined;
+    })();
+    successor._retiringHost = retirement;
+    void retirement.then(() => {
+      if (successor._retiringHost === retirement) successor._retiringHost = undefined;
+    });
+    await this.activateSession(sessionId, piPath, env ?? predecessor._env, undefined, true);
+  }
+
   reloadRunningSessions(): Promise<void> {
     return Promise.resolve();
   }
@@ -4895,7 +5236,7 @@ export class SessionRegistry {
       // The child may already be cold, failed, or unresponsive. In all cases
       // disposal below is still required and session files remain untouched.
     } finally {
-      await this.closeSession(sessionId);
+      if (this.sessions.get(sessionId) === record) await this.closeSession(sessionId);
     }
   }
 
@@ -4925,7 +5266,9 @@ export class SessionRegistry {
     record.proc = undefined;
     const retirement = proc ? this.retireHost(record, proc) : record._retiringHost;
     await Promise.all([retirement ?? Promise.resolve(), ...lockSettlements]);
+    if (this.sessions.get(sessionId) !== record) return;
     await this.releaseLock(record);
+    if (this.sessions.get(sessionId) !== record) return;
     this.releaseConfinedSource(record);
     this.sessions.delete(sessionId);
     if (record.sessionFile && this.byFile.get(path.resolve(record.sessionFile)) === sessionId) {
@@ -5027,6 +5370,8 @@ export class SessionRegistry {
     );
     const safe =
       permit.allowed &&
+      this.sessions.get(sessionId) === record &&
+      record.proc === proc &&
       !record._closing &&
       !record._dead &&
       !record._hostTransition &&
@@ -5063,7 +5408,9 @@ export class SessionRegistry {
     this.onPanelEvent(sessionId, { type: "unified_panel_reset" });
     record._mutationSequence++;
     await this.retireHost(record, proc);
+    if (this.sessions.get(sessionId) !== record || record._dead) return { released: false };
     await this.releaseLock(record);
+    if (this.sessions.get(sessionId) !== record || record._dead) return { released: false };
     record.status = "cold";
     record.error = undefined;
     this.publishUnavailable(record, "Unused activation visit released");
@@ -5117,6 +5464,7 @@ export class SessionRegistry {
     record.proc = undefined;
     if (proc) await this.retireHost(record, proc);
     else await record._retiringHost;
+    if (this.sessions.get(sessionId) !== record || record._dead) return;
     record._procReady = false;
     record.status = "cold";
     this.publishUnavailable(record, "Session deactivated explicitly");

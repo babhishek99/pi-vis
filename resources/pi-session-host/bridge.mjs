@@ -8,7 +8,9 @@ import {
   markdownTransformUtf8Bytes,
 } from "./markdown-transform-limits.mjs";
 import { RADIUS_PROVIDER_ID, configureRadiusMcp, inspectRadiusMcpConfig } from "./radius-mcp.mjs";
+import { shareSessionViaRadius } from "./session-share.mjs";
 import { SHELL_ADMISSION_CANCELLED_CODE, createStateAuthority } from "./state-authority.mjs";
+import { createToolRenderer } from "./tool-renderer.mjs";
 
 function exitSignalName(value) {
   if (typeof value === "string" && value.length > 0) return value;
@@ -222,6 +224,9 @@ export function assertHostCapabilities(session, runtime, pi) {
   fn(session?.sessionManager, "getBranch", "session.sessionManager.getBranch");
   fn(session?.sessionManager, "getCwd", "session.sessionManager.getCwd");
   fn(session?.sessionManager, "appendCustomEntry", "session.sessionManager.appendCustomEntry");
+  fn(session?.settingsManager, "flush", "session.settingsManager.flush");
+  fn(session?.settingsManager, "drainErrors", "session.settingsManager.drainErrors");
+  fn(session?.settingsManager, "reload", "session.settingsManager.reload");
   fn(pi, "resolveModelScopeWithDiagnostics", "pi.resolveModelScopeWithDiagnostics");
   fn(pi, "getShellConfig", "pi.getShellConfig");
 
@@ -331,6 +336,10 @@ export function setupCommandBridge({
 }) {
   let _session = session;
   let _unsubscribe = null;
+  const toolRenderer = createToolRenderer({
+    getSession: () => _session,
+    getTheme: () => uiContext?.theme,
+  });
   const activeInterrupts = new Map();
   let activeCommands = 0;
   let nextInterruptId = 1;
@@ -441,6 +450,13 @@ export function setupCommandBridge({
     },
     hasPendingBashPreparation: () => pendingUserBashPreparations.size > 0,
     cancelPendingBashPreparation: () => cancelPendingUserBashPreparations(),
+    cancelActiveCommand: () => {
+      const sharing = [...activeInterrupts.values()].filter(
+        (operation) => operation.kind === "share",
+      );
+      for (const operation of sharing) operation.interrupt();
+      return sharing.length > 0;
+    },
     runWithSurface: (surface, operation, intentId) =>
       admissionContext.run(intentId, () => {
         ensureInputResultObserver(_session.extensionRunner);
@@ -693,6 +709,7 @@ export function setupCommandBridge({
   }
 
   function disposeShell() {
+    toolRenderer.dispose();
     cancelPendingUserBashPreparations();
     activeShell?.controller.forceKill();
     _session.abortBash();
@@ -1195,6 +1212,11 @@ export function setupCommandBridge({
   function subscribeSession(s) {
     _unsubscribe?.();
     _unsubscribe = s.subscribe((event) => {
+      try {
+        toolRenderer.observe(event);
+      } catch {
+        // Presentation adapters never interrupt canonical event publication.
+      }
       // Events repair transcript/UI detail; direct snapshots own runtime state.
       // Queue work started by an input hook is extension-owned even when that
       // hook ultimately returns `continue`. Detached/nested work inherits this
@@ -1274,6 +1296,7 @@ export function setupCommandBridge({
   });
 
   runtime.setBeforeSessionInvalidate(() => {
+    toolRenderer.reset();
     // Pi has crossed the last boundary at which the old AgentSession is proven
     // usable. Any later replacement failure must retire this host rather than
     // publish a rolled-back epoch around a potentially disposed session.
@@ -1667,6 +1690,7 @@ export function setupCommandBridge({
         () =>
           _session.reload({
             beforeSessionStart: async () => {
+              toolRenderer.reset();
               authority.markTransitionBoundaryCrossed();
               panelBridge.closeAll();
               uiState.resetExtensionPresentation?.();
@@ -1704,8 +1728,16 @@ export function setupCommandBridge({
             inputKind: "slash_command",
           }) === true;
       }
+      const result = {
+        editorSourceConsumed,
+        successorIdentity: { hostInstanceId, sessionEpoch: authority.sessionEpoch },
+      };
+      // The reload intent belongs to the predecessor. Publish its completion
+      // while that owner is still routable, including the exact source clear,
+      // before the successor baseline fences predecessor publications.
+      authority.settleTransitionInitiator(reloadEditorCommand?.intentId, result);
       authority.commitTransition();
-      return { editorSourceConsumed };
+      return result;
     } catch (err) {
       if (err && typeof err === "object") err.editorSourceConsumed = editorSourceConsumed;
       if (!err?.lifecycleTimeout && !authority.transitionBoundaryCrossed) {
@@ -1717,6 +1749,27 @@ export function setupCommandBridge({
         });
       }
       throw err;
+    }
+  }
+
+  async function prepareSelectionDefaults() {
+    // Reload through Pi's public surface before every save. A parse error can
+    // otherwise leave Pi's save() disabled even after its error was drained.
+    _session.settingsManager.drainErrors();
+    await _session.settingsManager.reload();
+    if (_session.settingsManager.drainErrors().some((error) => error.scope === "global")) {
+      throw new Error("Cannot save new-session defaults. Check Pi's global settings and retry.");
+    }
+  }
+
+  async function flushSelectionDefaults() {
+    // Pi queues settings writes and reports storage errors separately. Publish
+    // success only after the next host can read the saved defaults from disk.
+    await _session.settingsManager.flush();
+    if (_session.settingsManager.drainErrors().some((error) => error.scope === "global")) {
+      throw new Error(
+        "Selection changed for this session, but saving new-session defaults failed.",
+      );
     }
   }
 
@@ -1745,7 +1798,9 @@ export function setupCommandBridge({
         (model) => model.id === modelId && (provider ? model.provider === provider : true),
       );
       if (matches.length !== 1) throw new Error(`Model not found or ambiguous: ${reference}`);
-      await _session.setModel(matches[0]);
+      await prepareSelectionDefaults();
+      await _session.setModel(matches[0], { persist: true });
+      await flushSelectionDefaults();
       return { response: { provider: matches[0].provider ?? "", modelId: matches[0].id } };
     };
     const replace = async (operation, details) => {
@@ -2310,26 +2365,48 @@ export function setupCommandBridge({
               candidate.provider === intent.provider && candidate.id === intent.modelId,
           );
           if (!model) throw new Error(`Model not found: ${intent.provider}/${intent.modelId}`);
-          await _session.setModel(model, { persist: intent.persist === true });
+          if (intent.persist !== false) await prepareSelectionDefaults();
+          await _session.setModel(model, { persist: intent.persist !== false });
+          if (intent.persist !== false) await flushSelectionDefaults();
           return { provider: model.provider ?? intent.provider, modelId: model.id };
         }
         case "setThinking":
-          _session.setThinkingLevel(intent.level, { persist: intent.persist === true });
+          if (intent.persist !== false) await prepareSelectionDefaults();
+          _session.setThinkingLevel(intent.level, { persist: intent.persist !== false });
+          if (intent.persist !== false) await flushSelectionDefaults();
           return { level: intent.level };
         case "rename":
           _session.setSessionName(intent.name);
           return { name: intent.name };
         case "reload":
-          await handleReload(true, {
+          return handleReload(true, {
             intentId: envelope.intentId,
             editorRevision: intent.editorRevision,
             editorText: intent.editorText,
             surface: intent.surface,
           });
-          return {
-            successorIdentity: { hostInstanceId, sessionEpoch: authority.sessionEpoch },
-          };
         case "export": {
+          if (intent.forShare === true) {
+            const sharingSession = _session;
+            const controller = new AbortController();
+            const radiusResult = await trackInterruptibleOperation(
+              "share",
+              () => controller.abort(),
+              () =>
+                shareSessionViaRadius(sharingSession, {
+                  version: pi.CURRENT_SESSION_VERSION,
+                  signal: controller.signal,
+                  assertCurrentOwner: () => {
+                    if (
+                      _session !== sharingSession ||
+                      authority.sessionEpoch !== owner.sessionEpoch
+                    )
+                      throw new Error("Session changed during share");
+                  },
+                }),
+            );
+            if (radiusResult) return radiusResult;
+          }
           const path = await exportSessionToHtml(intent.outputPath);
           if (typeof path !== "string" || path.length === 0)
             throw new Error("Session export did not return a file path");
@@ -2763,6 +2840,11 @@ export function setupCommandBridge({
             success: true,
             data: renderEntry(command.entryId, command.cols, command.expanded),
           });
+          break;
+        }
+
+        case "render_tool": {
+          send({ type: "response", id, success: true, data: toolRenderer.render(command) });
           break;
         }
 

@@ -39,7 +39,6 @@ import {
   configureHttpDispatcher,
   createPiBuiltinExtensions,
   createSessionRuntimeOptionsResolver,
-  createTranscriptToolRestorationExtension,
   createTrustResolver,
   importPi,
   importPiTui,
@@ -50,6 +49,7 @@ import { assertHostCapabilities, setupCommandBridge } from "./bridge.mjs";
 import { buildEditorTheme } from "./editor-theme.mjs";
 import { createIpcSendQueue } from "./ipc-send-queue.mjs";
 import { createPanelReconstruction } from "./panel-reconstruction.mjs";
+import { migrateLegacyAzureCredential } from "./pi-compatibility.mjs";
 import { importPinnedLlamaExtension } from "./pinned-pi-private.mjs";
 import {
   canonicalizeConfinedSessionLineage,
@@ -650,6 +650,14 @@ async function handleInit(msg) {
       const { resolveTrust } = createTrustResolver(pi, ad, sc, (labels) =>
         promptProjectTrustChoice(createDialog, sc, labels),
       );
+      try {
+        await migrateLegacyAzureCredential(ad);
+      } catch {
+        console.error("[pi-session-host] Legacy Azure account migration failed");
+        throw new Error(
+          "Could not migrate the Azure account; check the global auth.json configuration",
+        );
+      }
       const services = await pi.createAgentSessionServices({
         cwd: sc,
         agentDir: ad,
@@ -657,14 +665,7 @@ async function handleInit(msg) {
         // this factory anew and therefore receives a fresh timeout signal.
         modelRuntimeSignal: AbortSignal.timeout(15_000),
         resourceLoaderOptions: {
-          extensionFactories: [
-            ...builtinExtensionFactories,
-            {
-              name: "pi-vis-transcript-tool-restoration",
-              factory: createTranscriptToolRestorationExtension(sm),
-              hidden: true,
-            },
-          ],
+          extensionFactories: builtinExtensionFactories,
         },
         resourceLoaderReloadOptions: { resolveProjectTrust: resolveTrust },
       });

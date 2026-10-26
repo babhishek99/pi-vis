@@ -140,6 +140,7 @@ export async function entriesToTranscript(
             data["resultDetails"] = result.details;
             data["resultMetadata"] = result.metadata;
             data["usage"] = result.usage;
+            data["durationMs"] = result.durationMs;
             data["diff"] = result.diff;
             data["patch"] = result.patch;
             data["isError"] = msg.isError ?? false;
@@ -159,6 +160,7 @@ export async function entriesToTranscript(
                 resultDetails: result.details,
                 resultMetadata: result.metadata,
                 usage: result.usage,
+                durationMs: result.durationMs,
                 diff: result.diff,
                 patch: result.patch,
                 isError: msg.isError ?? false,

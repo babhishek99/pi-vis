@@ -49,10 +49,6 @@ function securityClosureFixture({ braceVersion = "5.0.12" } = {}) {
     path.join(sourcePi, "package.json"),
     path.join(piPackageDirectory, "package.json"),
   );
-  fs.copyFileSync(
-    path.join(sourcePi, "npm-shrinkwrap.json"),
-    path.join(piPackageDirectory, "npm-shrinkwrap.json"),
-  );
   writeJson(path.join(piPackageDirectory, "node_modules", "minimatch", "package.json"), {
     name: "minimatch",
     version: "10.2.6",
@@ -61,6 +57,11 @@ function securityClosureFixture({ braceVersion = "5.0.12" } = {}) {
   writeJson(path.join(piPackageDirectory, "node_modules", "brace-expansion", "package.json"), {
     name: "brace-expansion",
     version: braceVersion,
+  });
+
+  writeJson(path.join(piPackageDirectory, "node_modules", "undici", "package.json"), {
+    name: "undici",
+    version: "8.12.2",
   });
 
   return { root, projectRoot: root, piPackageDirectory };
@@ -111,7 +112,7 @@ describe("Pi production security closure", () => {
     );
   });
 
-  it("rejects a repacked Pi tarball and a changed embedded vulnerable baseline", () => {
+  it("rejects a repacked Pi tarball and an unsafe published dependency or stale shrinkwrap", () => {
     const repacked = securityClosureFixture();
     const lockPath = path.join(repacked.root, "package-lock.json");
     const lock = readJson(lockPath);
@@ -122,13 +123,30 @@ describe("Pi production security closure", () => {
       "Locked @earendil-works/pi-coding-agent integrity",
     );
 
-    const changedShrinkwrap = securityClosureFixture();
-    const shrinkwrapPath = path.join(changedShrinkwrap.piPackageDirectory, "npm-shrinkwrap.json");
-    const shrinkwrap = readJson(shrinkwrapPath);
-    shrinkwrap.packages["node_modules/brace-expansion"].version = "5.0.12";
-    writeJson(shrinkwrapPath, shrinkwrap);
-    expect(() => verifyInstalledPiSecurityClosure(changedShrinkwrap)).toThrow(
-      'Published Pi brace-expansion version must be "5.0.9"',
+    const changedManifest = securityClosureFixture();
+    const manifestPath = path.join(changedManifest.piPackageDirectory, "package.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+    manifest.dependencies["brace-expansion"] = "5.0.9";
+    writeJson(manifestPath, manifest);
+    expect(() => verifyInstalledPiSecurityClosure(changedManifest)).toThrow(
+      'Published Pi brace-expansion dependency must be "5.0.12"',
+    );
+
+    const staleShrinkwrap = securityClosureFixture();
+    writeJson(path.join(staleShrinkwrap.piPackageDirectory, "npm-shrinkwrap.json"), {});
+    expect(() => verifyInstalledPiSecurityClosure(staleShrinkwrap)).toThrow(
+      "Published Pi must not contain npm-shrinkwrap.json",
+    );
+  });
+
+  it("rejects stale Pi transport bytes even with a patched dependency lock", () => {
+    const fixture = securityClosureFixture();
+    writeJson(path.join(fixture.piPackageDirectory, "node_modules", "undici", "package.json"), {
+      name: "undici",
+      version: "8.10.2",
+    });
+    expect(() => verifyInstalledPiSecurityClosure(fixture)).toThrow(
+      'Pi-resolved undici version must be "8.12.2"',
     );
   });
 

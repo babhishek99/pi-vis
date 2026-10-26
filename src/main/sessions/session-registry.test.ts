@@ -26,6 +26,43 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const runtimeIdentity = (record: NonNullable<ReturnType<SessionRegistry["getSession"]>>) =>
   [record.proc!.hostInstanceId!, record.proc!.sessionEpoch] as const;
 
+function defaultSelectionEnvelope(
+  record: SessionRecord,
+  intentId: string,
+  kind: "setModel" | "setThinking" = "setThinking",
+): IntentEnvelope {
+  return {
+    sessionId: record.sessionId,
+    rendererGeneration: record._rendererGeneration,
+    intentId,
+    expectedOwner: {
+      hostInstanceId: record.proc!.hostInstanceId!,
+      sessionEpoch: record.proc!.sessionEpoch,
+    },
+    intent:
+      kind === "setModel" ? { kind, provider: "test", modelId: intentId } : { kind, level: "high" },
+  };
+}
+
+function completeDefaultSelection(record: SessionRecord, envelope: IntentEnvelope): void {
+  record.proc!.emit("authorityFrame", {
+    owner: envelope.expectedOwner,
+    transportSequence: 1,
+    records: [
+      {
+        type: "intent_outcome",
+        outcome: {
+          intentId: envelope.intentId,
+          owner: envelope.expectedOwner,
+          kind: envelope.intent.kind,
+          state: "completed",
+        },
+      },
+    ],
+    terminalSnapshot: { recentIntentOutcomes: [] },
+  } as unknown as AuthorityFrame);
+}
+
 function publishRuntimeResumeCheckpoint(
   record: NonNullable<ReturnType<SessionRegistry["getSession"]>>,
   state: SessionRuntimeResumeState,
@@ -84,6 +121,7 @@ function harness(
   const readyLocks: boolean[] = [];
   const availableRuntimeLocks: boolean[] = [];
   const fileChanges: unknown[] = [];
+  const transitionNotificationOrder: string[] = [];
   const fakes: FakeHostProcess[] = [];
   const spawnArgs: string[][] = [];
   const spawnCwds: Array<string | undefined> = [];
@@ -139,20 +177,24 @@ function harness(
     (...args) => unifiedRequests.push(args),
     (sid, state) => {
       runtimeStates.push(state);
+      transitionNotificationOrder.push("runtime");
       if (state.availability === "available")
         availableRuntimeLocks.push(registry.getSession(sid)?._hasLock === true);
     },
     (...args) => submissions.push(args),
     (...args) => restorations.push(args),
     (...args) => uiAcknowledgements.push(args),
-    () => {},
+    () => transitionNotificationOrder.push("batch"),
     {
       ...(options.unifiedClaimTimeoutMs !== undefined
         ? { unifiedClaimTimeoutMs: options.unifiedClaimTimeoutMs }
         : {}),
     },
     () => {},
-    (...args) => fileChanges.push(args),
+    (...args) => {
+      fileChanges.push(args);
+      transitionNotificationOrder.push("file");
+    },
   );
   return {
     registry,
@@ -168,6 +210,7 @@ function harness(
     readyLocks,
     availableRuntimeLocks,
     fileChanges,
+    transitionNotificationOrder,
     fakes,
     spawnArgs,
     spawnCwds,
@@ -191,6 +234,979 @@ afterEach(() => {
 });
 
 describe("SessionRegistry direct AgentSession authority", () => {
+  it("fences existing-host /new behind the saved default prefix without waiting later choices", async () => {
+    const h = harness();
+    const ids = ["first", "existing", "later"].map((name) =>
+      h.registry.openSession(`/tmp/${name}-project`),
+    );
+    for (const id of ids) await h.registry.activateSession(id, "/tmp/pi", {});
+    const [first, existing, later] = ids.map((id) => h.registry.getSession(id)!) as [
+      SessionRecord,
+      SessionRecord,
+      SessionRecord,
+    ];
+    const earlier = defaultSelectionEnvelope(first, "earlier-choice");
+    const newer = defaultSelectionEnvelope(later, "later-choice");
+    const fresh: IntentEnvelope = {
+      ...defaultSelectionEnvelope(existing, "new-in-existing-host"),
+      intent: { kind: "invokeCommand", text: "/new", editorRevision: 0, surface: "composer" },
+    };
+    vi.spyOn(first.proc!, "dispatchIntent").mockResolvedValue({
+      status: "admitted",
+      intentId: earlier.intentId,
+      owner: earlier.expectedOwner,
+    });
+    const newDispatch = vi.spyOn(existing.proc!, "dispatchIntent").mockResolvedValue({
+      status: "admitted",
+      intentId: fresh.intentId,
+      owner: fresh.expectedOwner,
+    });
+    vi.spyOn(later.proc!, "dispatchIntent").mockResolvedValue({
+      status: "admitted",
+      intentId: newer.intentId,
+      owner: newer.expectedOwner,
+    });
+    await h.registry.dispatchIntent(earlier);
+    const pendingNew = h.registry.dispatchIntent(fresh);
+    const pendingLater = h.registry.dispatchIntent(newer);
+    await tick();
+    expect(newDispatch).not.toHaveBeenCalled();
+    completeDefaultSelection(first, earlier);
+    await expect(pendingNew).resolves.toMatchObject({ status: "admitted" });
+    await pendingLater;
+    expect(newDispatch).toHaveBeenCalledOnce();
+    completeDefaultSelection(later, newer);
+    await h.registry.stopAll();
+  });
+
+  it.each(["replaced", "deactivated", "renderer_replaced", "transitioning"] as const)(
+    "refuses an existing-host /new whose owner becomes %s during the defaults wait",
+    async (change) => {
+      const h = harness();
+      const firstId = h.registry.openSession("/tmp/first-project");
+      const existingId = h.registry.openSession("/tmp/existing-project");
+      await h.registry.activateSession(firstId, "/tmp/pi", {});
+      await h.registry.activateSession(existingId, "/tmp/pi", {});
+      await h.registry.rendererAttach(existingId, 1);
+      const first = h.registry.getSession(firstId)!;
+      const existing = h.registry.getSession(existingId)!;
+      const earlier = defaultSelectionEnvelope(first, "earlier-choice");
+      vi.spyOn(first.proc!, "dispatchIntent").mockResolvedValue({
+        status: "admitted",
+        intentId: earlier.intentId,
+        owner: earlier.expectedOwner,
+      });
+      const originalProc = existing.proc!;
+      const newDispatch = vi.spyOn(originalProc, "dispatchIntent");
+      const fresh: IntentEnvelope = {
+        ...defaultSelectionEnvelope(existing, "new-in-existing-host"),
+        intent: { kind: "invokeCommand", text: "/new", editorRevision: 2, surface: "unified" },
+      };
+      h.fakes[1]!.emitWire({
+        type: "unified_submit_request",
+        id: "new-request",
+        text: "/new",
+        editorRevision: 2,
+        postClearEditor: { revision: 3, text: "", attachments: [] },
+        submissionIntentId: fresh.intentId,
+      });
+      await tick();
+      expect(
+        h.registry.claimUnifiedSubmit(existingId, "new-request", 1, fresh.expectedOwner),
+      ).toMatchObject({ claimed: true });
+      await h.registry.dispatchIntent(earlier);
+      const pendingNew = h.registry.dispatchIntent(fresh);
+      await tick();
+      expect(newDispatch).not.toHaveBeenCalled();
+      expect(existing._pendingUnifiedSubmits.get("new-request")).toMatchObject({
+        dispatchWaitingForDefaults: true,
+      });
+      expect(existing._pendingUnifiedSubmits.get("new-request")?.dispatchStarted).not.toBe(true);
+      if (change === "replaced") {
+        await h.registry.forceRestartSession(existingId, "/tmp/pi", {});
+      } else if (change === "deactivated") {
+        await h.registry.deactivateSession(existingId);
+      } else if (change === "renderer_replaced") {
+        await h.registry.rendererAttach(existingId, 2);
+      } else {
+        existing.availability = "transitioning";
+      }
+      completeDefaultSelection(first, earlier);
+      await expect(pendingNew).resolves.toMatchObject({
+        status: "not_admitted",
+        reason:
+          change === "replaced" || change === "deactivated"
+            ? "stale_owner"
+            : change === "renderer_replaced"
+              ? "invalid"
+              : "transitioning",
+      });
+      expect(newDispatch).not.toHaveBeenCalled();
+      expect(existing._pendingUnifiedSubmits.has("new-request")).toBe(false);
+      expect(existing._retainedDispatchIntents.size).toBe(0);
+      expect(existing._retainedIntents.size).toBe(0);
+      if (change === "replaced" || change === "deactivated") {
+        expect(existing._restorations.get("interrupted-unified:new-request")).toMatchObject({
+          certainty: "not_processed",
+          clearedIntentIds: [fresh.intentId],
+        });
+      }
+      expect(existing._restorations.has("ambiguous-unified:new-request")).toBe(false);
+      if (change === "transitioning") {
+        expect(h.fakes[1]!.sent).toContainEqual(
+          expect.objectContaining({
+            type: "unified_submit_response",
+            id: "new-request",
+            ok: false,
+          }),
+        );
+      }
+      await h.registry.stopAll();
+    },
+  );
+
+  it.each([false, true])(
+    "keeps unified /new custody across a waiting retry; pending request replaced: %s",
+    async (replaceRequest) => {
+      const h = harness();
+      const firstId = h.registry.openSession("/tmp/first-project");
+      const existingId = h.registry.openSession("/tmp/existing-project");
+      await h.registry.activateSession(firstId, "/tmp/pi", {});
+      await h.registry.activateSession(existingId, "/tmp/pi", {});
+      await h.registry.rendererAttach(existingId, 1);
+      const first = h.registry.getSession(firstId)!;
+      const existing = h.registry.getSession(existingId)!;
+      const earlier = defaultSelectionEnvelope(first, "earlier-choice");
+      vi.spyOn(first.proc!, "dispatchIntent").mockResolvedValue({
+        status: "admitted",
+        intentId: earlier.intentId,
+        owner: earlier.expectedOwner,
+      });
+      const fresh: IntentEnvelope = {
+        ...defaultSelectionEnvelope(existing, "new-in-existing-host"),
+        intent: { kind: "invokeCommand", text: "/new", editorRevision: 2, surface: "unified" },
+      };
+      h.fakes[1]!.emitWire({
+        type: "unified_submit_request",
+        id: "new-request",
+        text: "/new",
+        editorRevision: 2,
+        postClearEditor: { revision: 3, text: "", attachments: [] },
+        submissionIntentId: fresh.intentId,
+      });
+      await tick();
+      expect(
+        h.registry.claimUnifiedSubmit(existingId, "new-request", 1, fresh.expectedOwner),
+      ).toMatchObject({ claimed: true });
+      const pending = existing._pendingUnifiedSubmits.get("new-request")!;
+      const newDispatch = vi.spyOn(existing.proc!, "dispatchIntent").mockResolvedValue({
+        status: "admitted",
+        intentId: fresh.intentId,
+        owner: fresh.expectedOwner,
+      });
+      await h.registry.dispatchIntent(earlier);
+      const original = h.registry.dispatchIntent(fresh);
+      await tick();
+      await expect(h.registry.dispatchIntent(fresh)).resolves.toMatchObject({
+        status: "not_admitted",
+        reason: "invalid",
+      });
+      expect(existing._pendingUnifiedSubmits.get("new-request")).toBe(pending);
+      expect(newDispatch).not.toHaveBeenCalled();
+      expect(h.fakes[1]!.sent.some((item) => item.type === "unified_submit_response")).toBe(false);
+      if (replaceRequest) {
+        existing._pendingUnifiedSubmits.set("new-request", { ...pending });
+      }
+      completeDefaultSelection(first, earlier);
+      await expect(original).resolves.toMatchObject({
+        status: replaceRequest ? "not_admitted" : "admitted",
+      });
+      expect(newDispatch).toHaveBeenCalledTimes(replaceRequest ? 0 : 1);
+      expect(existing._pendingUnifiedSubmits.has("new-request")).toBe(replaceRequest);
+      await h.registry.stopAll();
+    },
+  );
+
+  it.each(["setModel", "setThinking"] as const)(
+    "serializes cross-host %s writes before allowing a fresh host",
+    async (kind) => {
+      const h = harness();
+      const firstId = h.registry.openSession("/tmp/first-project");
+      const laterId = h.registry.openSession("/tmp/later-project");
+      await h.registry.activateSession(firstId, "/tmp/pi", {});
+      await h.registry.activateSession(laterId, "/tmp/pi", {});
+      const first = h.registry.getSession(firstId)!;
+      const later = h.registry.getSession(laterId)!;
+      const earlier = defaultSelectionEnvelope(first, "earlier-choice", kind);
+      const newer = defaultSelectionEnvelope(later, "newer-choice", kind);
+      const writes: string[] = [];
+      vi.spyOn(first.proc!, "dispatchIntent").mockImplementation(async () => {
+        writes.push("earlier");
+        return { status: "admitted", intentId: earlier.intentId, owner: earlier.expectedOwner };
+      });
+      const laterDispatch = vi.spyOn(later.proc!, "dispatchIntent").mockImplementation(async () => {
+        writes.push("newer");
+        return { status: "admitted", intentId: newer.intentId, owner: newer.expectedOwner };
+      });
+      await h.registry.dispatchIntent(earlier);
+      const pendingLater = h.registry.dispatchIntent(newer);
+      const freshId = h.registry.openSession("/tmp/fresh-project");
+      const activation = h.registry.activateSession(freshId, "/tmp/pi", {});
+      await tick();
+      expect(laterDispatch).not.toHaveBeenCalled();
+      expect(h.fakes).toHaveLength(2);
+      completeDefaultSelection(first, earlier);
+      await expect(pendingLater).resolves.toMatchObject({ status: "admitted" });
+      expect(writes).toEqual(["earlier", "newer"]);
+      expect(h.fakes).toHaveLength(2);
+      completeDefaultSelection(later, newer);
+      await activation;
+      expect(h.fakes).toHaveLength(3);
+      await h.registry.stopAll();
+    },
+  );
+
+  it.each([false, true])(
+    "queued default retries never await their own terminal outcome; conflicting: %s",
+    async (conflicting) => {
+      const h = harness();
+      const firstId = h.registry.openSession("/tmp/first-project");
+      const laterId = h.registry.openSession("/tmp/later-project");
+      await h.registry.activateSession(firstId, "/tmp/pi", {});
+      await h.registry.activateSession(laterId, "/tmp/pi", {});
+      const first = h.registry.getSession(firstId)!;
+      const later = h.registry.getSession(laterId)!;
+      const earlier = defaultSelectionEnvelope(first, "earlier-choice");
+      const newer = defaultSelectionEnvelope(later, "newer-choice");
+      vi.spyOn(first.proc!, "dispatchIntent").mockResolvedValue({
+        status: "admitted",
+        intentId: earlier.intentId,
+        owner: earlier.expectedOwner,
+      });
+      const laterDispatch = vi
+        .spyOn(later.proc!, "dispatchIntent")
+        .mockResolvedValueOnce({
+          status: "admitted",
+          intentId: newer.intentId,
+          owner: newer.expectedOwner,
+        })
+        .mockResolvedValueOnce(
+          conflicting
+            ? { status: "not_admitted", intentId: newer.intentId, reason: "invalid" }
+            : { status: "duplicate", intentId: newer.intentId, owner: newer.expectedOwner },
+        );
+      await h.registry.dispatchIntent(earlier);
+      const pendingLater = h.registry.dispatchIntent(newer);
+      const retry = h.registry.dispatchIntent(
+        conflicting ? { ...newer, intent: { kind: "setThinking", level: "low" } } : newer,
+      );
+      await tick();
+      expect(laterDispatch).not.toHaveBeenCalled();
+      completeDefaultSelection(first, earlier);
+      await expect(pendingLater).resolves.toMatchObject({ status: "admitted" });
+      await expect(retry).resolves.toMatchObject({
+        status: conflicting ? "not_admitted" : "duplicate",
+      });
+      const freshId = h.registry.openSession("/tmp/fresh-project");
+      const activation = h.registry.activateSession(freshId, "/tmp/pi", {});
+      await tick();
+      expect(h.fakes).toHaveLength(2);
+      completeDefaultSelection(later, newer);
+      await activation;
+      await h.registry.stopAll();
+    },
+  );
+
+  it.each(["not_admitted", "exited"] as const)(
+    "releases the next host's default write after its predecessor is %s",
+    async (settlement) => {
+      const h = harness();
+      const firstId = h.registry.openSession("/tmp/first-project");
+      const laterId = h.registry.openSession("/tmp/later-project");
+      await h.registry.activateSession(firstId, "/tmp/pi", {});
+      await h.registry.activateSession(laterId, "/tmp/pi", {});
+      const first = h.registry.getSession(firstId)!;
+      const later = h.registry.getSession(laterId)!;
+      const earlier = defaultSelectionEnvelope(first, "earlier-choice");
+      const newer = defaultSelectionEnvelope(later, "newer-choice");
+      let resolveReceipt!: (receipt: never) => void;
+      vi.spyOn(first.proc!, "dispatchIntent").mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveReceipt = resolve;
+        }),
+      );
+      const laterDispatch = vi.spyOn(later.proc!, "dispatchIntent").mockResolvedValue({
+        status: "admitted",
+        intentId: newer.intentId,
+        owner: newer.expectedOwner,
+      });
+      const pendingEarlier = h.registry.dispatchIntent(earlier);
+      const pendingLater = h.registry.dispatchIntent(newer);
+      await tick();
+      expect(laterDispatch).not.toHaveBeenCalled();
+      if (settlement === "exited") {
+        resolveReceipt({
+          status: "admitted",
+          intentId: earlier.intentId,
+          owner: earlier.expectedOwner,
+        } as never);
+        await pendingEarlier;
+        first._rapidFailureCount = 100;
+        const fake = h.fakes[0]!;
+        fake.disconnect = () => {
+          fake.disconnectCalls++;
+          fake.connected = false;
+          fake.emit("disconnect");
+        };
+        first.proc!.emit("error", new Error("default writer failed"));
+        await tick();
+        expect(laterDispatch).not.toHaveBeenCalled();
+        fake.emitExit(1);
+      } else {
+        resolveReceipt({
+          status: "not_admitted",
+          intentId: earlier.intentId,
+          reason: "busy",
+        } as never);
+        await pendingEarlier;
+      }
+      await expect(pendingLater).resolves.toMatchObject({ status: "admitted" });
+      expect(laterDispatch).toHaveBeenCalledOnce();
+      completeDefaultSelection(later, newer);
+      await h.registry.stopAll();
+    },
+  );
+
+  it.each(
+    (["admitted", "delivery_unknown", "not_admitted"] as const).flatMap((retryStatus) =>
+      [false, true].map((busyLast) => ({ retryStatus, busyLast })),
+    ),
+  )(
+    "keeps concurrent retry custody until every send is settled: $retryStatus, busy last: $busyLast",
+    async ({ retryStatus, busyLast }) => {
+      const h = harness();
+      const firstId = h.registry.openSession("/tmp/first-project");
+      const laterId = h.registry.openSession("/tmp/later-project");
+      await h.registry.activateSession(firstId, "/tmp/pi", {});
+      await h.registry.activateSession(laterId, "/tmp/pi", {});
+      const first = h.registry.getSession(firstId)!;
+      const later = h.registry.getSession(laterId)!;
+      const earlier = defaultSelectionEnvelope(first, "earlier-choice");
+      const newer = defaultSelectionEnvelope(later, "newer-choice");
+      let resolveBusy!: (receipt: never) => void;
+      let resolveRetry!: (receipt: never) => void;
+      vi.spyOn(first.proc!, "dispatchIntent")
+        .mockReturnValueOnce(
+          new Promise((resolve) => {
+            resolveBusy = resolve;
+          }),
+        )
+        .mockReturnValueOnce(
+          new Promise((resolve) => {
+            resolveRetry = resolve;
+          }),
+        );
+      const laterDispatch = vi.spyOn(later.proc!, "dispatchIntent").mockResolvedValue({
+        status: "admitted",
+        intentId: newer.intentId,
+        owner: newer.expectedOwner,
+      });
+      const original = h.registry.dispatchIntent(earlier);
+      const retry = h.registry.dispatchIntent(earlier);
+      const pendingLater = h.registry.dispatchIntent(newer);
+      const freshId = h.registry.openSession("/tmp/fresh-project");
+      const activation = h.registry.activateSession(freshId, "/tmp/pi", {});
+      await tick();
+      const busyReceipt = {
+        status: "not_admitted",
+        intentId: earlier.intentId,
+        reason: "busy",
+      };
+      const retryReceipt =
+        retryStatus === "not_admitted"
+          ? busyReceipt
+          : { status: retryStatus, intentId: earlier.intentId, owner: earlier.expectedOwner };
+      if (busyLast) {
+        resolveRetry(retryReceipt as never);
+        await retry;
+      } else {
+        resolveBusy(busyReceipt as never);
+        await original;
+      }
+      await tick();
+      expect(laterDispatch).not.toHaveBeenCalled();
+      expect(h.fakes).toHaveLength(2);
+      expect(first._retainedDispatchIntents.size).toBe(1);
+      if (busyLast) {
+        resolveBusy(busyReceipt as never);
+        await original;
+      } else {
+        resolveRetry(retryReceipt as never);
+        await retry;
+      }
+      await tick();
+      if (retryStatus !== "not_admitted") {
+        expect(laterDispatch).not.toHaveBeenCalled();
+        expect(h.fakes).toHaveLength(2);
+        expect(first._retainedDispatchIntents.size).toBe(1);
+        completeDefaultSelection(first, earlier);
+      } else {
+        expect(first._retainedDispatchIntents.size).toBe(0);
+      }
+      await expect(pendingLater).resolves.toMatchObject({ status: "admitted" });
+      expect(h.fakes).toHaveLength(2);
+      completeDefaultSelection(later, newer);
+      await activation;
+      await h.registry.stopAll();
+    },
+  );
+
+  it("a queued owner's retirement cannot let a later write overtake its live predecessor", async () => {
+    const h = harness();
+    const ids = ["first", "queued", "later"].map((name) =>
+      h.registry.openSession(`/tmp/${name}-project`),
+    );
+    for (const id of ids) await h.registry.activateSession(id, "/tmp/pi", {});
+    const [first, queued, later] = ids.map((id) => h.registry.getSession(id)!) as [
+      SessionRecord,
+      SessionRecord,
+      SessionRecord,
+    ];
+    const earlier = defaultSelectionEnvelope(first, "earlier-choice");
+    const middle = defaultSelectionEnvelope(queued, "queued-choice");
+    const newer = defaultSelectionEnvelope(later, "newer-choice");
+    vi.spyOn(first.proc!, "dispatchIntent").mockResolvedValue({
+      status: "admitted",
+      intentId: earlier.intentId,
+      owner: earlier.expectedOwner,
+    });
+    const queuedDispatch = vi.spyOn(queued.proc!, "dispatchIntent");
+    const laterDispatch = vi.spyOn(later.proc!, "dispatchIntent").mockResolvedValue({
+      status: "admitted",
+      intentId: newer.intentId,
+      owner: newer.expectedOwner,
+    });
+    await h.registry.dispatchIntent(earlier);
+    const pendingMiddle = h.registry.dispatchIntent(middle);
+    await h.registry.forceRestartSession(ids[1]!, "/tmp/pi", {});
+    const pendingLater = h.registry.dispatchIntent(newer);
+    await tick();
+    expect(queuedDispatch).not.toHaveBeenCalled();
+    expect(laterDispatch).not.toHaveBeenCalled();
+    completeDefaultSelection(first, earlier);
+    await expect(pendingMiddle).resolves.toMatchObject({
+      status: "not_admitted",
+      reason: "stale_owner",
+    });
+    await expect(pendingLater).resolves.toMatchObject({ status: "admitted" });
+    expect(queuedDispatch).not.toHaveBeenCalled();
+    completeDefaultSelection(later, newer);
+    await h.registry.stopAll();
+  });
+
+  it.each(["closing", "transitioning", "unavailable", "renderer_replaced"] as const)(
+    "rechecks queued default dispatch after its predecessor settles: %s",
+    async (fence) => {
+      const h = harness();
+      const firstId = h.registry.openSession("/tmp/first-project");
+      const laterId = h.registry.openSession("/tmp/later-project");
+      await h.registry.activateSession(firstId, "/tmp/pi", {});
+      await h.registry.activateSession(laterId, "/tmp/pi", {});
+      const first = h.registry.getSession(firstId)!;
+      const later = h.registry.getSession(laterId)!;
+      const earlier = defaultSelectionEnvelope(first, "earlier-choice");
+      const newer = defaultSelectionEnvelope(later, "newer-choice");
+      vi.spyOn(first.proc!, "dispatchIntent").mockResolvedValue({
+        status: "admitted",
+        intentId: earlier.intentId,
+        owner: earlier.expectedOwner,
+      });
+      const laterDispatch = vi.spyOn(later.proc!, "dispatchIntent");
+      await h.registry.dispatchIntent(earlier);
+      const pendingLater = h.registry.dispatchIntent(newer);
+      if (fence === "closing") later._closing = true;
+      else if (fence === "renderer_replaced") later._rendererGeneration++;
+      else later.availability = fence;
+      completeDefaultSelection(first, earlier);
+      await expect(pendingLater).resolves.toMatchObject({
+        status: "not_admitted",
+        reason:
+          fence === "unavailable"
+            ? "transport_unavailable"
+            : fence === "renderer_replaced"
+              ? "invalid"
+              : fence,
+      });
+      expect(laterDispatch).not.toHaveBeenCalled();
+      expect(later._retainedDispatchIntents.size).toBe(0);
+      const freshId = h.registry.openSession("/tmp/fresh-project");
+      await h.registry.activateSession(freshId, "/tmp/pi", {});
+      await h.registry.stopAll();
+    },
+  );
+
+  it.each(["completed", "failed", "rejected"] as const)(
+    "fresh hosts wait for the exact default-selection terminal outcome: %s",
+    async (state) => {
+      const h = harness();
+      const selectingId = h.registry.openSession("/tmp/selecting-project");
+      await h.registry.activateSession(selectingId, "/tmp/pi", {});
+      const record = h.registry.getSession(selectingId)!;
+      const proc = record.proc!;
+      const owner = { hostInstanceId: proc.hostInstanceId!, sessionEpoch: proc.sessionEpoch };
+      let resolveReceipt!: (receipt: never) => void;
+      vi.spyOn(proc, "dispatchIntent").mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveReceipt = resolve;
+        }),
+      );
+      const dispatch = h.registry.dispatchIntent({
+        sessionId: selectingId,
+        rendererGeneration: record._rendererGeneration,
+        intentId: "slow-default-write",
+        expectedOwner: owner,
+        intent: { kind: "setThinking", level: "high" },
+      });
+      const freshId = h.registry.openSession("/tmp/fresh-project");
+      const activation = h.registry.activateSession(freshId, "/tmp/pi", {});
+      await tick();
+      expect(h.fakes).toHaveLength(1);
+      const publish = (outcomeOwner: typeof owner) =>
+        h.registry.routeAuthorityPublication(selectingId, {
+          plane: "semantic",
+          owner,
+          payload: {
+            owner,
+            transportSequence: 1,
+            records: [
+              {
+                type: "intent_outcome",
+                outcome: {
+                  intentId: "slow-default-write",
+                  owner: outcomeOwner,
+                  kind: "setThinking",
+                  state,
+                },
+              },
+            ],
+            terminalSnapshot: { recentIntentOutcomes: [] },
+          } as unknown as AuthorityFrame,
+        });
+      publish({ ...owner, sessionEpoch: owner.sessionEpoch + 1 });
+      await tick();
+      expect(h.fakes).toHaveLength(1);
+      publish(owner);
+      await activation;
+      expect(h.fakes).toHaveLength(2);
+      // The terminal authority boundary releases startup even when its mere
+      // admission receipt is delayed until after the write has settled.
+      resolveReceipt({ status: "admitted", intentId: "slow-default-write", owner } as never);
+      await dispatch;
+      await h.registry.stopAll();
+    },
+  );
+
+  it("proven non-admission and explicit session-only changes never block fresh hosts", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const proc = record.proc!;
+    const owner = { hostInstanceId: proc.hostInstanceId!, sessionEpoch: proc.sessionEpoch };
+    const envelope = {
+      sessionId: id,
+      rendererGeneration: record._rendererGeneration,
+      expectedOwner: owner,
+    };
+    vi.spyOn(proc, "dispatchIntent").mockResolvedValueOnce({
+      status: "not_admitted",
+      intentId: "refused-default",
+      reason: "busy",
+    });
+    await h.registry.dispatchIntent({
+      ...envelope,
+      intentId: "refused-default",
+      intent: { kind: "setThinking", level: "high" },
+    });
+    vi.spyOn(proc, "dispatchIntent").mockResolvedValueOnce({
+      status: "admitted",
+      intentId: "session-only",
+      owner,
+    });
+    await h.registry.dispatchIntent({
+      ...envelope,
+      intentId: "session-only",
+      intent: { kind: "setThinking", level: "low", persist: false },
+    });
+    const freshId = h.registry.openSession("/tmp/other-project");
+    await h.registry.activateSession(freshId, "/tmp/pi", {});
+    expect(h.fakes).toHaveLength(2);
+    await h.registry.stopAll();
+  });
+
+  it("hard restart bypasses an unrelated pending default-selection write", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const proc = record.proc!;
+    const owner = { hostInstanceId: proc.hostInstanceId!, sessionEpoch: proc.sessionEpoch };
+    vi.spyOn(proc, "dispatchIntent").mockResolvedValueOnce({
+      status: "admitted",
+      intentId: "stuck-write",
+      owner,
+    });
+    await h.registry.dispatchIntent({
+      sessionId: id,
+      rendererGeneration: record._rendererGeneration,
+      expectedOwner: owner,
+      intentId: "stuck-write",
+      intent: { kind: "setModel", provider: "test", modelId: "test-model" },
+    });
+    const freshId = h.registry.openSession("/tmp/other-project");
+    await h.registry.forceRestartSession(freshId, "/tmp/pi", {});
+    expect(h.registry.getSession(freshId)?.status).toBe("ready");
+    expect(h.fakes).toHaveLength(2);
+    await h.registry.stopAll();
+  });
+
+  it("a duplicate completed default selection cannot re-arm the startup barrier", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const proc = record.proc!;
+    const owner = { hostInstanceId: proc.hostInstanceId!, sessionEpoch: proc.sessionEpoch };
+    const envelope: IntentEnvelope = {
+      sessionId: id,
+      rendererGeneration: record._rendererGeneration,
+      expectedOwner: owner,
+      intentId: "completed-default",
+      intent: { kind: "setThinking", level: "high" },
+    };
+    vi.spyOn(proc, "dispatchIntent")
+      .mockResolvedValueOnce({ status: "admitted", intentId: envelope.intentId, owner })
+      .mockResolvedValueOnce({ status: "duplicate", intentId: envelope.intentId, owner });
+    await h.registry.dispatchIntent(envelope);
+    proc.emit("authorityFrame", {
+      owner,
+      transportSequence: 1,
+      records: [
+        {
+          type: "intent_outcome",
+          outcome: { intentId: envelope.intentId, owner, kind: "setThinking", state: "completed" },
+        },
+      ],
+      terminalSnapshot: { recentIntentOutcomes: [] },
+    } as unknown as AuthorityFrame);
+    await h.registry.dispatchIntent(envelope);
+    const freshId = h.registry.openSession("/tmp/other-project");
+    const activation = h.registry.activateSession(freshId, "/tmp/pi", {});
+    try {
+      await vi.waitFor(() => expect(h.fakes).toHaveLength(2));
+      await activation;
+    } finally {
+      await h.registry.stopAll();
+      await activation;
+    }
+  });
+
+  it("a conflicting-id refusal cannot release an earlier pending default write", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const proc = record.proc!;
+    const owner = { hostInstanceId: proc.hostInstanceId!, sessionEpoch: proc.sessionEpoch };
+    const envelope: IntentEnvelope = {
+      sessionId: id,
+      rendererGeneration: record._rendererGeneration,
+      expectedOwner: owner,
+      intentId: "conflicting-default",
+      intent: { kind: "setThinking", level: "high" },
+    };
+    vi.spyOn(proc, "dispatchIntent")
+      .mockResolvedValueOnce({ status: "admitted", intentId: envelope.intentId, owner })
+      .mockResolvedValueOnce({
+        status: "not_admitted",
+        intentId: envelope.intentId,
+        reason: "invalid",
+      });
+    await h.registry.dispatchIntent(envelope);
+    await h.registry.dispatchIntent({ ...envelope, intent: { kind: "setThinking", level: "low" } });
+    const freshId = h.registry.openSession("/tmp/other-project");
+    const activation = h.registry.activateSession(freshId, "/tmp/pi", {});
+    await tick();
+    expect(h.fakes).toHaveLength(1);
+    proc.emit("authorityFrame", {
+      owner,
+      transportSequence: 1,
+      records: [
+        {
+          type: "intent_outcome",
+          outcome: { intentId: envelope.intentId, owner, kind: "setThinking", state: "completed" },
+        },
+      ],
+      terminalSnapshot: { recentIntentOutcomes: [] },
+    } as unknown as AuthorityFrame);
+    await activation;
+    expect(h.fakes).toHaveLength(2);
+    await h.registry.stopAll();
+  });
+
+  it("a failed selection host releases startup only after its process has actually exited", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    record._rapidFailureCount = 100;
+    const proc = record.proc!;
+    const fake = h.fakes[0]!;
+    const owner = { hostInstanceId: proc.hostInstanceId!, sessionEpoch: proc.sessionEpoch };
+    vi.spyOn(proc, "dispatchIntent").mockResolvedValueOnce({
+      status: "admitted",
+      intentId: "lost-write",
+      owner,
+    });
+    await h.registry.dispatchIntent({
+      sessionId: id,
+      rendererGeneration: record._rendererGeneration,
+      expectedOwner: owner,
+      intentId: "lost-write",
+      intent: { kind: "setThinking", level: "high" },
+    });
+    fake.disconnect = () => {
+      fake.disconnectCalls++;
+      fake.connected = false;
+      fake.emit("disconnect");
+    };
+    proc.emit("error", new Error("selection host failed"));
+    const freshId = h.registry.openSession("/tmp/other-project");
+    const activation = h.registry.activateSession(freshId, "/tmp/pi", {});
+    await tick();
+    expect(h.fakes).toHaveLength(1);
+    fake.emitExit(1);
+    await activation;
+    expect(h.fakes).toHaveLength(2);
+    await h.registry.stopAll();
+  });
+
+  it("keeps the successor lock when restarting during an already detached close", async () => {
+    const fixture = persistedSessionFixture("force-restart-detached-close");
+    const h = harness();
+    const id = h.registry.openSession(fixture.root, fixture.sessionFile);
+    try {
+      await h.registry.activateSession(id, "/tmp/pi", {});
+      const predecessor = h.registry.getSession(id)!;
+      const fake = h.fakes[0]!;
+      vi.spyOn(predecessor.proc!, "forceClose").mockResolvedValue();
+      vi.spyOn(fake, "disconnect").mockImplementation(() => {
+        fake.disconnectCalls++;
+        fake.connected = false;
+      });
+      const closing = h.registry.closeSessionGracefully(id);
+      await vi.waitFor(() => expect(fake.disconnectCalls).toBe(1));
+      await h.registry.forceRestartSession(id, "/tmp/pi", {});
+      await closing;
+      expect(h.registry.getSession(id)?.status).toBe("ready");
+      expect(h.registry.getSession(id)?._hasLock).toBe(true);
+      expect(await lockfile.check(fixture.sessionFile, { realpath: false })).toBe(true);
+    } finally {
+      await h.registry.stopAll();
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it("a pending predecessor close cannot close the force-restarted successor", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const predecessor = h.registry.getSession(id)!;
+    const snapshot = predecessor.snapshot!;
+    let resolveSnapshot!: (snapshot: AgentSessionSnapshot) => void;
+    vi.spyOn(predecessor.proc!, "requestSnapshot").mockReturnValueOnce(
+      new Promise<AgentSessionSnapshot>((resolve) => {
+        resolveSnapshot = resolve;
+      }),
+    );
+
+    const closing = h.registry.closeSessionGracefully(id);
+    await h.registry.forceRestartSession(id, "/tmp/pi", {});
+    const successor = h.registry.getSession(id)!;
+    expect(successor).not.toBe(predecessor);
+    resolveSnapshot(snapshot);
+    await closing;
+    expect(h.registry.getSession(id)).toBe(successor);
+    expect(successor.status).toBe("ready");
+    expect(h.fakes[1]?.killSignal).toBeUndefined();
+    await h.registry.stopAll();
+  });
+
+  it("hard restarts a busy host without an admission RPC or graceful shutdown", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const oldRecord = h.registry.getSession(id)!;
+    const oldHost = oldRecord.proc!;
+    const fake = h.fakes[0]!;
+    fake.autoRespondToStateRequests = false;
+    Object.assign(fake.runtime, { isStreaming: true, isIdle: false });
+    const before = fake.sent.length;
+
+    const restart = h.registry.forceRestartSession(id, "/tmp/pi", {});
+    expect(fake.killSignal).toBe("SIGKILL");
+    expect(fake.disconnectCalls).toBe(0);
+    expect(fake.sent).toHaveLength(before);
+    expect(h.registry.getSession(id)).not.toBe(oldRecord);
+    await restart;
+    expect(h.registry.getSession(id)?.status).toBe("ready");
+    expect(h.registry.getSession(id)?.proc).not.toBe(oldHost);
+    // Late predecessor events cannot fail or retire the replacement.
+    oldHost.emit("error", new Error("late predecessor failure"));
+    expect(h.registry.getSession(id)?.status).toBe("ready");
+    await h.registry.stopAll();
+  });
+
+  it("carries an unfinished hard restart forward when restarted again", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const fake = h.fakes[0]!;
+    vi.spyOn(fake, "kill").mockImplementation((signal) => {
+      fake.killSignal = signal ?? "SIGKILL";
+      return true;
+    });
+    const first = h.registry.forceRestartSession(id, "/tmp/pi", {});
+    const second = h.registry.forceRestartSession(id, "/tmp/pi", {});
+    await tick();
+    expect(h.fakes).toHaveLength(1);
+    fake.emitExit(null, "SIGKILL");
+    await Promise.all([first, second]);
+    expect(h.fakes).toHaveLength(2);
+    expect(h.registry.getSession(id)?.status).toBe("ready");
+    expect(h.registry.getSession(id)?._retiringHost).toBeUndefined();
+    await h.registry.stopAll();
+  });
+
+  it.each([
+    ["preserves newer unsent work", 3, "new unsent draft"],
+    ["does not restore the cleared primary", 2, "independent draft"],
+  ] as const)(
+    "hard restart %s after an earlier source clear",
+    async (_label, revision, expected) => {
+      const h = harness();
+      const id = h.registry.openSession("/tmp/project");
+      await h.registry.activateSession(id, "/tmp/pi", {});
+      const predecessor = h.registry.getSession(id)!;
+      const primaryAttachment = { kind: "file", name: "primary.txt", path: "/tmp/primary.txt" };
+      const independentAttachment = { kind: "file", name: "other.txt", path: "/tmp/other.txt" };
+      predecessor.snapshot = {
+        ...predecessor.snapshot!,
+        editor: {
+          revision,
+          text: "new unsent draft",
+          attachments: [primaryAttachment],
+          conflictText: "independent draft",
+          conflictAttachments: [independentAttachment],
+        },
+      };
+      predecessor._editorClearedThroughRevision = 2;
+      // An older consumed source may still have unresolved disk reconciliation.
+      // Emergency restart must not wait for it or discard a newer editor revision.
+      predecessor._editorRecoveryReconciliation = new Promise(() => {});
+
+      try {
+        await h.registry.forceRestartSession(id, "/tmp/pi", {});
+        const editor = h.registry.getSession(id)?.snapshot?.editor;
+        expect(editor?.text).toBe(expected);
+        expect(editor?.attachments).toEqual([
+          revision === 3 ? primaryAttachment : independentAttachment,
+        ]);
+        if (revision === 3) {
+          expect(editor?.conflictText).toBe("independent draft");
+          expect(editor?.conflictAttachments).toEqual([independentAttachment]);
+        }
+      } finally {
+        await h.registry.stopAll();
+      }
+    },
+  );
+
+  it("does not publish a predecessor's cold state after restarting during deactivation", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const fake = h.fakes[0]!;
+    vi.spyOn(fake, "disconnect").mockImplementation(() => {
+      fake.connected = false;
+    });
+    const deactivation = h.registry.deactivateSession(id);
+    await h.registry.forceRestartSession(id, "/tmp/pi", {});
+    await deactivation;
+    expect(h.registry.getSession(id)?.status).toBe("ready");
+    expect(h.statuses.some((status) => (status as unknown[])[1] === "cold")).toBe(false);
+    await h.registry.stopAll();
+  });
+
+  it("does not publish a retired startup failure over the emergency successor", async () => {
+    const h = harness({
+      failStartupAt: [0],
+      configureFake: (fake, index) => {
+        if (index === 0)
+          fake.disconnect = () => {
+            fake.disconnectCalls++;
+            fake.connected = false;
+          };
+      },
+    });
+    const id = h.registry.openSession("/tmp/project");
+    const activation = h.registry.activateSession(id, "/tmp/pi", {});
+    await vi.waitFor(() => expect(h.fakes[0]?.disconnectCalls).toBe(1));
+    await h.registry.forceRestartSession(id, "/tmp/pi", {});
+    await activation;
+    expect(h.registry.getSession(id)?.status).toBe("ready");
+    expect(h.statuses.some((status) => (status as unknown[])[1] === "failed")).toBe(false);
+    await h.registry.stopAll();
+  });
+
+  it("hard restart bypasses a startup still waiting for its environment", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    let resolveEnvironment!: (env: Record<string, string>) => void;
+    const environment = new Promise<Record<string, string>>((resolve) => {
+      resolveEnvironment = resolve;
+    });
+    const oldActivation = h.registry.activateSession(id, "/tmp/pi", environment);
+    await h.registry.forceRestartSession(id, "/tmp/pi", {});
+    expect(h.fakes).toHaveLength(1);
+    resolveEnvironment({});
+    await oldActivation;
+    expect(h.fakes).toHaveLength(1);
+    expect(h.registry.getSession(id)?.status).toBe("ready");
+    await h.registry.stopAll();
+  });
+
+  it("hard restarts cold and terminal-failed records and retains their session file lock", async () => {
+    const fixture = persistedSessionFixture("force-restart");
+    const h = harness();
+    const id = h.registry.openSession(fixture.root, fixture.sessionFile);
+    try {
+      await h.registry.forceRestartSession(id, "/tmp/pi", {});
+      const record = h.registry.getSession(id)!;
+      record._rapidFailureCount = 100;
+      record.proc!.emit("error", new Error("terminal failure"));
+      await tick();
+      await h.registry.forceRestartSession(id, "/tmp/pi", {});
+      expect(h.registry.getSession(id)?.status).toBe("ready");
+      expect(h.registry.getSession(id)?._hasLock).toBe(true);
+      expect(h.registry.getSession(id)?.sessionFile).toBe(fixture.sessionFile);
+      expect(h.registry.getSession(id)?._rapidFailureCount).toBe(0);
+    } finally {
+      await h.registry.stopAll();
+      fs.rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it("silently closes cold sessions", async () => {
     const h = harness();
     const id = h.registry.openSession("/tmp/project");
@@ -617,6 +1633,45 @@ describe("SessionRegistry direct AgentSession authority", () => {
     expect(h.registry.getSession(id)?.proc).toBeDefined();
     expect(h.fakes[0]!.killed).toBe(false);
     h.registry.stopAll();
+  });
+
+  it("does not apply a delayed activation-release permit to a replacement owner", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    const otherId = h.registry.openSession("/tmp/other-project");
+    await h.registry.activateSession(id, "/tmp/pi", {}, "visit-replaced");
+    await h.registry.activateSession(otherId, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const predecessor = record.proc!;
+    const replacement = h.registry.getSession(otherId)!.proc!;
+    let releasePermit!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releasePermit = resolve;
+    });
+    let permitReceived = false;
+    const originalPermit = predecessor.requestLifecyclePermit.bind(predecessor);
+    vi.spyOn(predecessor, "requestLifecyclePermit").mockImplementation(async (operation) => {
+      const verdict = await originalPermit(operation);
+      permitReceived = true;
+      await gate;
+      return verdict;
+    });
+
+    try {
+      const releasing = h.registry.releaseActivationVisit(id, "visit-replaced");
+      await vi.waitFor(() => expect(permitReceived).toBe(true));
+      record.proc = replacement;
+      releasePermit();
+
+      await expect(releasing).resolves.toEqual({ released: false });
+      expect(record.proc).toBe(replacement);
+      expect(h.fakes[0]!.disconnectCalls).toBe(0);
+      expect(h.fakes[1]!.disconnectCalls).toBe(0);
+    } finally {
+      releasePermit();
+      record.proc = predecessor;
+      await h.registry.stopAll();
+    }
   });
 
   it("keeps a visit host after the immediate startup window or extension UI appears", async () => {
@@ -1078,6 +2133,7 @@ describe("SessionRegistry direct AgentSession authority", () => {
         ).toHaveLength(2),
       );
       expect(h.registry.getSession(id)?._hostTransition).toMatchObject({ kind: "new" });
+      h.transitionNotificationOrder.length = 0;
       fake.sessionEpoch = 1;
       fake.emitControl({
         type: "transition_batch",
@@ -1104,6 +2160,15 @@ describe("SessionRegistry direct AgentSession authority", () => {
         ]),
       );
       expect(h.registry.getSession(id)).toMatchObject({ availability: "available" });
+      // No later host snapshot/heartbeat is emitted: the committed batch must
+      // independently restore transport availability for the exact successor.
+      expect(h.runtimeStates.at(-1)).toMatchObject({
+        availability: "available",
+        hostInstanceId: fake.hostInstanceId,
+        sessionEpoch: 1,
+      });
+      expect(h.availableRuntimeLocks.at(-1)).toBe(true);
+      expect(h.transitionNotificationOrder).toEqual(["file", "batch", "runtime"]);
     } finally {
       h.registry.stopAll();
       await new Promise((resolve) => setTimeout(resolve, 10));

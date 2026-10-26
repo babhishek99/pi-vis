@@ -811,7 +811,7 @@ test.describe("Slash commands", () => {
     rmrf(folders.piSessionsDir);
   });
 
-  test("/thinking opens a searchable picker and an exact argument applies session-only", async () => {
+  test("/thinking opens a searchable picker and accepts an exact argument", async () => {
     test.setTimeout(60_000);
     const folders = await makeFolders();
     const { app, window } = await launchApp(folders);

@@ -7,15 +7,11 @@ import {
   fauxAssistantMessage,
   fauxToolCall,
   registerFauxProvider,
-} from "../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/compat.js";
-import { InMemoryCredentialStore } from "../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js";
-import { CodemodeSandbox } from "../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-codemode/dist/index.js";
-import { createInMemoryTransportPair } from "../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-mcp/dist/testing/index.js";
-import {
-  createPiBuiltinExtensions,
-  createTranscriptToolRestorationExtension,
-  createTrustResolver,
-} from "./bootstrap.mjs";
+} from "../../node_modules/@earendil-works/pi-ai/dist/compat.js";
+import { InMemoryCredentialStore } from "../../node_modules/@earendil-works/pi-ai/dist/index.js";
+import { CodemodeSandbox } from "../../node_modules/@earendil-works/pi-codemode/dist/index.js";
+import { createInMemoryTransportPair } from "../../node_modules/@earendil-works/pi-mcp/dist/testing/index.js";
+import { createPiBuiltinExtensions, createTrustResolver } from "./bootstrap.mjs";
 
 const MCP_TOOL_NAME = "mcp__project_loopback__echo";
 const TINY_PNG_BASE64 =
@@ -174,14 +170,7 @@ async function startProductionRuntime(
       ...(modelRuntime ? { modelRuntime } : {}),
       modelRuntimeSignal: AbortSignal.timeout(5_000),
       resourceLoaderOptions: {
-        extensionFactories: [
-          ...createPiBuiltinExtensions(pi),
-          {
-            name: "pi-vis-transcript-tool-restoration",
-            factory: createTranscriptToolRestorationExtension(sessionManager),
-            hidden: true,
-          },
-        ],
+        extensionFactories: createPiBuiltinExtensions(pi),
       },
       resourceLoaderReloadOptions: { resolveProjectTrust: resolveTrust },
     });
@@ -250,6 +239,96 @@ describe("Pi 1.0 built-in runtimes", () => {
     } finally {
       await sandbox.close();
     }
+  });
+
+  it("queues saturated codemode workers and classifies images through the session registry", async () => {
+    const fixture = makeProductionLoaderFixture({ defaultTools: ["codemode"] });
+    await withPiAgentDir(fixture.agentDir, async () => {
+      let runtime;
+      const release = [];
+      try {
+        ({ runtime } = await startProductionRuntime(fixture, false));
+        const requests = [];
+        const model = {
+          type: "classifier",
+          provider: "pivis-vision",
+          id: "judge",
+          name: "Vision judge",
+          api: "pivis-test-classifier",
+          baseUrl: "https://vision.fixture.invalid/v1",
+          input: ["text", "image"],
+          contextWindow: 10000,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        };
+        runtime.session.modelRuntime.registerProvider("pivis-vision", {
+          apiKey: "fixture-secret",
+          models: [model],
+          classifiers: {
+            "pivis-test-classifier": {
+              classify: async (selected, context, options) => {
+                requests.push({ selected, context, options });
+                if (requests.length <= 2) await new Promise((resolve) => release.push(resolve));
+                return {
+                  api: selected.api,
+                  provider: selected.provider,
+                  model: selected.id,
+                  answers: { visible: { type: "bool", probability: 1 } },
+                  stopReason: "stop",
+                  timestamp: 1,
+                };
+              },
+            },
+          },
+        });
+        const definition = runtime.session.getToolDefinition("codemode");
+        const settled = [];
+        const calls = [0, 1, 2].map((index) => {
+          const signal = AbortSignal.timeout(5000);
+          const callId = `vision-${index}`;
+          return definition
+            .execute(
+              callId,
+              {
+                code: `
+            const model = await models.getModelOfType("classifier", "pivis-vision", "judge");
+            return await models.classify(model, {
+              state: { label: "image" },
+              images: [{ type: "image", data: "${TINY_PNG_BASE64}", mimeType: "image/png" }],
+              questions: { visible: { type: "bool", instructions: "Is the image visible?", criteria: { true: "yes", false: "no" } } }
+            });
+          `,
+              },
+              signal,
+              undefined,
+              runtime.session.extensionRunner.createToolContext(callId, signal),
+            )
+            .then((result) => {
+              settled[index] = result;
+              return result;
+            });
+        });
+        await vi.waitFor(() => expect(requests).toHaveLength(2), { timeout: 4000 });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(settled[2]).toBeUndefined();
+        for (const resolve of release.splice(0)) resolve();
+        const results = await Promise.all(calls);
+        expect(results.every((result) => !result.isError)).toBe(true);
+        expect(requests).toHaveLength(3);
+        for (const request of requests) {
+          expect(request.selected).toMatchObject({ provider: "pivis-vision", id: "judge" });
+          expect(request.context.images).toEqual([
+            { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" },
+          ]);
+          expect(request.options.apiKey).toBe("fixture-secret");
+        }
+        for (const result of results)
+          expect(result.content.some((part) => part.text?.includes('"probability":1'))).toBe(true);
+      } finally {
+        for (const resolve of release.splice(0)) resolve();
+        await runtime?.dispose();
+        rmSync(fixture.root, { recursive: true, force: true });
+      }
+    });
   });
 
   it("runs image generation through the real codemode tool and session model registry", async () => {
@@ -331,11 +410,16 @@ describe("Pi 1.0 built-in runtimes", () => {
             type: "text",
             text: expect.stringMatching(/^Script completed\nWall time \d+\.\d seconds\nOutput:\n$/),
           },
-          { type: "text", text: "painted a fox" },
+          {
+            type: "text",
+            text: expect.stringMatching(
+              /^==> text 1\/2 <==\npainted a fox\n\[Image saved to .+ \(image\/png, 70B\)\]$/,
+            ),
+          },
           { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" },
           {
             type: "text",
-            text: '{"id":"painter","stopReason":"stop","cost":0.04}',
+            text: '==> text 2/2 <==\n{"id":"painter","stopReason":"stop","cost":0.04}',
           },
         ]);
         expect(result.usage?.cost.total).toBeCloseTo(0.04, 10);
@@ -436,6 +520,7 @@ describe("Pi 1.0 built-in runtimes", () => {
       registerCommand: (name, command) => {
         commands.set(name, command);
       },
+      registerToolRenderer: () => {},
       on: (event, handler) => {
         const listeners = handlers.get(event) ?? [];
         listeners.push(handler);
@@ -714,7 +799,7 @@ describe("Pi 1.0 built-in runtimes", () => {
             },
             { timeout: 5_000, interval: 20 },
           );
-          expect(runtime.session.getActiveToolNames()).not.toContain(MCP_TOOL_NAME);
+          expect(runtime.session.getActiveToolNames()).toContain(MCP_TOOL_NAME);
           faux.setResponses([
             (context) => {
               expect(context.tools?.map((tool) => tool.name)).toContain(MCP_TOOL_NAME);

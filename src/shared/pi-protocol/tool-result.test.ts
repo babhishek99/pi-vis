@@ -11,6 +11,14 @@ describe("extractToolResult", () => {
     cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0.2, total: 3.3 },
   };
 
+  it("retains only finite nonnegative recorded execution durations", () => {
+    expect(extractToolResult({ content: [], durationMs: 12.5 }).durationMs).toBe(12.5);
+    expect(extractToolResult({ content: [], durationMs: 0 }).durationMs).toBe(0);
+    for (const durationMs of [-1, Number.NaN, Number.POSITIVE_INFINITY, "12", null]) {
+      expect(extractToolResult({ content: [], durationMs }).durationMs).toBeUndefined();
+    }
+  });
+
   it("keeps live and persisted content snapshots at the same helper boundary", () => {
     const result = {
       content: [

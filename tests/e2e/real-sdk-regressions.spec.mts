@@ -243,6 +243,12 @@ test.describe("Pinned real Pi regressions", () => {
       enabledModels: ["pivis-local/pivis-scoped-model:high", "pivis-local/pivis-test-model"],
       defaultTools: ["read"],
     });
+    // Exercise the scope's own thinking preference when no global thinking
+    // default exists. Explicit saved defaults win for fresh sessions.
+    const scopedSettingsPath = join(fixture.dirs.agent, "settings.json");
+    const scopedSettings = JSON.parse(fs.readFileSync(scopedSettingsPath, "utf8"));
+    delete scopedSettings.defaultThinkingLevel;
+    fs.writeFileSync(scopedSettingsPath, JSON.stringify(scopedSettings));
     let launch: RealSdkLaunch | undefined;
     try {
       launch = await fixture.launch();

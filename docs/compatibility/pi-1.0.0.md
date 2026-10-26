@@ -1,6 +1,6 @@
 # Pi 1.0.0 compatibility audit
 
-This is the current runtime compatibility contract for Pi-Vis. It records the
+This is a historical compatibility audit, superseded by the [1.4.0 audit](pi-1.4.0.md). It records the
 audit from the previously shipped 0.99.2 pin to exact
 `@earendil-works/pi-coding-agent@1.0.0`; the
 [0.99.2 audit](pi-0.99.2.md) remains historical evidence and is not the current

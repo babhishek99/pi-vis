@@ -223,6 +223,7 @@ describe("transcript reducer", () => {
           details: { truncation: { truncated: false } },
         },
         isError: false,
+        durationMs: 42.25,
       }),
     );
 
@@ -235,6 +236,7 @@ describe("transcript reducer", () => {
       ]);
       expect(block.data.resultDetails).toEqual({ truncation: { truncated: false } });
       expect(block.data.isStreaming).toBe(false);
+      expect(block.data.durationMs).toBe(42.25);
     }
   });
 

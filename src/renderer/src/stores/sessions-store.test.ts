@@ -19,6 +19,7 @@ import { nextPanelInputSequence } from "../lib/panel-input-sequence.js";
 import { RENDERER_GENERATION } from "../lib/renderer-generation.js";
 import { dispatchSessionIntent } from "../lib/session-intent.js";
 import {
+  authoritySnapshotFor,
   isNewSessionPending,
   isPendingNewSessionActiveFor,
   isSessionAbortable,
@@ -1212,6 +1213,16 @@ describe("sessions store - runtime turn-result status", () => {
     store.applyRuntimeState(SESSION_A, runtimeState(true));
     store.applyRuntimeState(SESSION_A, runtimeState(false, 2));
     expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBeUndefined();
+  });
+
+  it("does not mark a cancelled background run as successful completion", () => {
+    const store = useSessionsStore.getState();
+    store.applyEvent(SESSION_A, { type: "agent_start" });
+    store.applyEvent(SESSION_A, { type: "agent_settled", aborted: true });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBeUndefined();
+    store.applyEvent(SESSION_A, { type: "agent_start" });
+    store.applyEvent(SESSION_A, { type: "agent_settled", aborted: false });
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)?.unreadStatus).toBe("done");
   });
 
   it("promotes a background turn from flashing to a solid done marker at agent_settled", () => {
@@ -6296,6 +6307,209 @@ describe("sessions store - authority intent projection", () => {
 
   afterEach(() => vi.unstubAllGlobals());
 
+  it("enables a quiet restored panel from a ready attach when the transport-ready event was missed", () => {
+    const store = useSessionsStore.getState();
+    store.applyRuntimeState(SESSION_A, runtimeState(false, 1, "unavailable"));
+    store.applyAuthorityAttach(SESSION_A, authorityAttachWithUnifiedPanel(semanticSnapshot(1), 7));
+    const session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(session.availability).toBe("available");
+    expect(session.unifiedPanel?.inputEnabled).toBe(true);
+    expect(authoritySnapshotFor(session)).toBeDefined();
+  });
+
+  it("preserves app notifications while replacing and deduplicating the child notification baseline", () => {
+    const store = useSessionsStore.getState();
+    const first = authorityAttach(semanticSnapshot(1));
+    first.baseline.extensionUi.notifications = [
+      { id: "notification-1", message: "old extension notice" },
+    ];
+    store.applyAuthorityAttach(SESSION_A, first);
+    store.addToast(
+      SESSION_A,
+      "Reloaded settings, extensions, skills, prompts, and themes.",
+      "success",
+    );
+    const local = useSessionsStore.getState().sessions.get(SESSION_A)!.toasts.at(-1)!;
+
+    const next = authorityAttach(semanticSnapshot(2));
+    next.baseline.publicationHighWatermark = 1;
+    next.baseline.extensionUi.notifications = [
+      { id: "notification-2", message: "current extension notice" },
+    ];
+    store.applyAuthorityAttach(SESSION_A, next);
+    const after = useSessionsStore.getState().sessions.get(SESSION_A)!.toasts;
+    expect(after).toContainEqual(local);
+    expect(after.some((toast) => toast.message === "old extension notice")).toBe(false);
+    expect(after.filter((toast) => toast.id.startsWith("notification-"))).toMatchObject([
+      { id: "notification-2", message: "current extension notice" },
+    ]);
+    const extensionTimestamp = after.find((toast) => toast.id === "notification-2")!.createdAt;
+
+    const repeated = authorityAttach(semanticSnapshot(3));
+    repeated.baseline.publicationHighWatermark = 2;
+    repeated.baseline.extensionUi.notifications = next.baseline.extensionUi.notifications;
+    store.applyAuthorityAttach(SESSION_A, repeated);
+    const final = useSessionsStore.getState().sessions.get(SESSION_A)!.toasts;
+    expect(final).toHaveLength(2);
+    expect(final).toContainEqual(local);
+    expect(final.find((toast) => toast.id === "notification-2")?.createdAt).toBe(
+      extensionTimestamp,
+    );
+  });
+
+  it("replaces a compatibility extension notice with its canonical catalog entry without duplicating it", () => {
+    const store = useSessionsStore.getState();
+    store.addUiRequest(SESSION_A, {
+      type: "extension_ui_request",
+      id: "compatibility-notice",
+      method: "notify",
+      message: "extension notice",
+    });
+    store.addToast(SESSION_A, "App completion", "success");
+    expect(useSessionsStore.getState().sessions.get(SESSION_A)!.toasts[0]?.id).toBe(
+      "extension-notify:compatibility-notice",
+    );
+
+    const first = authorityAttach(semanticSnapshot(1));
+    first.baseline.extensionUi.notifications = [
+      { id: "notification-1", message: "extension notice" },
+    ];
+    store.applyAuthorityAttach(SESSION_A, first);
+    const notifications = useSessionsStore.getState().sessions.get(SESSION_A)!.toasts;
+    expect(notifications).toHaveLength(2);
+    expect(notifications.filter((toast) => toast.message === "extension notice")).toMatchObject([
+      { id: "notification-1" },
+    ]);
+    expect(notifications.some((toast) => toast.message === "App completion")).toBe(true);
+  });
+
+  it("retained same-host notices keep their age across a reload epoch so app success remains latest", () => {
+    const store = useSessionsStore.getState();
+    const first = authorityAttach(semanticSnapshot(1));
+    first.baseline.extensionUi.notifications = [
+      { id: "notification-1", message: "retained extension notice" },
+    ];
+    store.applyAuthorityAttach(SESSION_A, first);
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      const session = sessions.get(SESSION_A)!;
+      sessions.set(SESSION_A, {
+        ...session,
+        toasts: session.toasts.map((toast) => ({ ...toast, createdAt: 0 })),
+      });
+      return { sessions };
+    });
+    store.addToast(SESSION_A, "Reload completed", "success");
+
+    const reloaded = authorityAttach(
+      semanticSnapshot(2, { owner: { hostInstanceId: "host-1", sessionEpoch: 2 } }),
+    );
+    reloaded.baseline.publicationHighWatermark = 1;
+    reloaded.baseline.extensionUi.notifications = first.baseline.extensionUi.notifications;
+    store.applyAuthorityAttach(SESSION_A, reloaded);
+    const notifications = useSessionsStore.getState().sessions.get(SESSION_A)!.toasts;
+    expect(notifications).toHaveLength(2);
+    expect(notifications.find((toast) => toast.id === "notification-1")?.createdAt).toBe(0);
+    expect(notifications.at(-1)).toMatchObject({ message: "Reload completed", type: "success" });
+  });
+
+  it("a replacement host's reused notification ID receives a fresh timestamp and preview order", () => {
+    const store = useSessionsStore.getState();
+    const first = authorityAttach(semanticSnapshot(1));
+    first.baseline.extensionUi.notifications = [
+      { id: "notification-1", message: "old host notice" },
+    ];
+    store.applyAuthorityAttach(SESSION_A, first);
+    useSessionsStore.setState((state) => {
+      const sessions = new Map(state.sessions);
+      const session = sessions.get(SESSION_A)!;
+      sessions.set(SESSION_A, {
+        ...session,
+        toasts: session.toasts.map((toast) => ({ ...toast, createdAt: 0 })),
+      });
+      return { sessions };
+    });
+    store.addToast(SESSION_A, "Host restart requested");
+
+    const replacement = authorityAttach(
+      semanticSnapshot(2, { owner: { hostInstanceId: "host-2", sessionEpoch: 0 } }),
+    );
+    replacement.baseline.publicationHighWatermark = 1;
+    replacement.baseline.extensionUi.notifications = [
+      { id: "notification-1", message: "new host notice" },
+    ];
+    store.applyAuthorityAttach(SESSION_A, replacement);
+    const notifications = useSessionsStore.getState().sessions.get(SESSION_A)!.toasts;
+    expect(notifications).toHaveLength(2);
+    expect(notifications.at(-1)).toMatchObject({
+      id: "notification-1",
+      message: "new host notice",
+    });
+    expect(notifications.at(-1)!.createdAt).toBeGreaterThan(0);
+  });
+
+  it("retains contiguous predecessor reload outcomes behind a transport transition fence", () => {
+    const store = useSessionsStore.getState();
+    installAuthority();
+    store.applyRuntimeState(SESSION_A, runtimeState(false, 2, "transitioning"));
+    expect(
+      authoritySnapshotFor(useSessionsStore.getState().sessions.get(SESSION_A)),
+    ).toBeUndefined();
+    expect(
+      useSessionsStore.getState().sessions.get(SESSION_A)?.authorityProjection?.semantic.state,
+    ).toBe("following");
+    const outcome: IntentOutcome = {
+      intentId: "reload-transition",
+      owner: { hostInstanceId: "host-1", sessionEpoch: 1 },
+      kind: "reload",
+      state: "completed",
+      result: {
+        editorSourceConsumed: true,
+        successorIdentity: { hostInstanceId: "host-1", sessionEpoch: 2 },
+      },
+    };
+    publishSemantic(SESSION_A, 2, semanticSnapshot(2, { recentIntentOutcomes: [outcome] }), [
+      { type: "intent_outcome", outcome },
+    ]);
+    const transitioning = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(transitioning.authorityProjection?.semantic.state).toBe("following");
+    expect(
+      transitioning.authorityProjection?.authoritativeSnapshot?.recentIntentOutcomes,
+    ).toContainEqual(outcome);
+    expect(authoritySnapshotFor(transitioning)).toBeUndefined();
+    expect(transitioning.hostInstanceId).toBeUndefined();
+
+    store.applyRuntimeState(SESSION_A, runtimeState(false, 3, "available"));
+    const restored = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(restored.authorityProjection?.semantic.state).toBe("unavailable");
+    expect(authoritySnapshotFor(restored)).toBeUndefined();
+    const successor = semanticSnapshot(3, { owner: { hostInstanceId: "host-1", sessionEpoch: 2 } });
+    const successorAttach = authorityAttach(successor);
+    successorAttach.baseline.publicationHighWatermark = 2;
+    store.applyAuthorityAttach(SESSION_A, successorAttach);
+    expect(
+      authoritySnapshotFor(useSessionsStore.getState().sessions.get(SESSION_A))?.owner,
+    ).toEqual(successor.owner);
+  });
+
+  it.each([
+    { hostInstanceId: "other-host", sessionEpoch: 1 },
+    { hostInstanceId: "host-1", sessionEpoch: 2 },
+    {},
+  ])("fences an unproven transition owner instead of retaining authority: %s", (owner) => {
+    const store = useSessionsStore.getState();
+    installAuthority();
+    store.applyRuntimeState(SESSION_A, {
+      availability: "transitioning",
+      receivedAt: Date.now(),
+      ...owner,
+    });
+    const session = useSessionsStore.getState().sessions.get(SESSION_A)!;
+    expect(session.authorityProjection?.semantic.state).toBe("unavailable");
+    expect(session.authorityProjection?.authoritativeSnapshot).toBeUndefined();
+    expect(authoritySnapshotFor(session)).toBeUndefined();
+  });
+
   it("drains panel publications that beat the attach Promise without unmounting the legacy panel", () => {
     const store = useSessionsStore.getState();
     const owner = { hostInstanceId: "host-1", sessionEpoch: 1 };
@@ -7238,7 +7452,7 @@ describe("sessions store - recovered authority-frame regressions", () => {
     return [snapshot, records];
   };
 
-  it("retains a semantic working state across a same-sequence unavailable transport fact", () => {
+  it("retains semantic evidence while unavailable transport fences working controls", () => {
     publishSemantic(
       SESSION_A,
       2,
@@ -7256,9 +7470,8 @@ describe("sessions store - recovered authority-frame regressions", () => {
     useSessionsStore.getState().applyRuntimeState(SESSION_A, runtimeState(true, 2, "unavailable"));
     const session = useSessionsStore.getState().sessions.get(SESSION_A);
     expect(session?.availability).toBe("unavailable");
-    // The transport fact is diagnostic; the following semantic frame remains
-    // the sole source of the visible turn state.
-    expect(isSessionWorking(session)).toBe(true);
+    expect(session?.authorityProjection?.authoritativeSnapshot?.sdk.isStreaming).toBe(true);
+    expect(isSessionWorking(session)).toBe(false);
   });
 
   it("does not let a stale direct sequence replace a following authority frame", () => {

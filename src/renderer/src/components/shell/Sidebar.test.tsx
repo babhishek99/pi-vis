@@ -385,6 +385,54 @@ describe("Sidebar boot workspace restore", () => {
     unmount();
   });
 
+  it("confirms a force restart even when host authority is unavailable", async () => {
+    const sessionId = "restart-dead" as SessionId;
+    let finishRestart!: () => void;
+    const restarting = new Promise<{ restarted: true }>((resolve) => {
+      finishRestart = () => resolve({ restarted: true });
+    });
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === "workspace.list" || channel === "workspace.listSessions") return [];
+      if (channel === "session.forceRestart") return restarting;
+      throw new Error(`Unexpected IPC channel ${channel}`);
+    });
+    (globalThis.window as unknown as { pivis?: unknown }).pivis = { invoke };
+    useSessionsStore.getState().addWorkspace(WS_A);
+    useSessionsStore.getState().setExpandedWorkspaces([WS_A]);
+    useSessionsStore
+      .getState()
+      .createSession(sessionId, WS_A, "/tmp/dead.jsonl", "Dead host", undefined, "failed");
+    useSessionsStore
+      .getState()
+      .addUserMessage(sessionId, "saved history", undefined, { registerEcho: false });
+    const { container, unmount } = mount(<Sidebar onOpenSettings={() => {}} />);
+    await flushEffects();
+    const restartButton = container.querySelector<HTMLButtonElement>(".sidebar__session-restart")!;
+    act(() => restartButton.click());
+    expect(invoke).not.toHaveBeenCalledWith("session.forceRestart", expect.anything());
+    expect(document.activeElement?.textContent).toBe("Cancel");
+    act(() => (document.activeElement as HTMLButtonElement).click());
+    expect(invoke).not.toHaveBeenCalledWith("session.forceRestart", expect.anything());
+    act(() => restartButton.click());
+    const confirm = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".confirm-dialog button"),
+    ).find((button) => button.textContent === "Force restart")!;
+    act(() => confirm.click());
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith("session.forceRestart", { sessionId }),
+    );
+    expect(useSessionsStore.getState().sessions.has(sessionId)).toBe(true);
+    await flushEffects();
+    expect(document.querySelector(".confirm-dialog")).toBeNull();
+    // A successor that hangs before ready must not trap emergency recovery.
+    act(() => restartButton.click());
+    expect(document.querySelector(".confirm-dialog")).not.toBeNull();
+    act(() => (document.activeElement as HTMLButtonElement).click());
+    finishRestart();
+    await flushEffects();
+    unmount();
+  });
+
   it("preserves the live-session archive persistence, close, and refresh sequence", async () => {
     const sessionId = "archive-live" as SessionId;
     const filePath = "/tmp/archive-live.jsonl";

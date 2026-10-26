@@ -52,6 +52,7 @@ import {
 } from "@shared/pi-protocol/runtime-state.js";
 import { z } from "zod";
 import { appendDiagnostic } from "../diagnostics.js";
+import { forceKillProcessTree } from "./force-kill-process-tree.js";
 import { TestFaultInjector } from "./test-fault-injector.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -520,6 +521,9 @@ export class SessionHost extends EventEmitter {
     const forkFn = __forkOverride.fn ?? fork;
     this.proc = forkFn(hostPath, [], {
       cwd: workspacePath,
+      // Give emergency restart its own signal target, including ordinary
+      // tool/extension descendants, without involving the Electron process.
+      detached: process.platform !== "win32",
       env: { ...process.env, ...env },
       stdio:
         confinedSessionDescriptor === undefined
@@ -1977,6 +1981,40 @@ export class SessionHost extends EventEmitter {
   private terminateTimer: ReturnType<typeof setTimeout> | null = null;
   private killTimer: ReturnType<typeof setTimeout> | null = null;
 
+  private waitForProcessExit(): Promise<void> {
+    if (this.proc.exitCode !== null || this.proc.signalCode !== null) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const settled = (): void => {
+        this.proc.off("exit", settled);
+        this.proc.off("close", settled);
+        resolve();
+      };
+      // A failed spawn emits close without exit. Ordinary exits must settle
+      // immediately even if descendants retain the child's capture pipes.
+      this.proc.once("exit", settled);
+      this.proc.once("close", settled);
+    });
+  }
+
+  /** Emergency disposal: no child RPC, idle check, disconnect, or grace period. */
+  forceStop(): Promise<void> {
+    this.stopPromise ??= this.waitForProcessExit();
+    this.shutdownRequested = true;
+    this.clearShutdownTimers();
+    this.faultInjector.dispose();
+    if (this.startupTimer) clearTimeout(this.startupTimer);
+    if (this.dialogTimer) clearTimeout(this.dialogTimer);
+    if (this.controlWatchdog) clearInterval(this.controlWatchdog);
+    this.startupTimer = null;
+    this.dialogTimer = null;
+    this.controlWatchdog = null;
+    if (this.proc.pid && !__forkOverride.fn) forceKillProcessTree(this.proc.pid);
+    if (this.proc.pid && this.proc.exitCode === null && this.proc.signalCode === null) {
+      this.proc.kill("SIGKILL");
+    }
+    return this.stopPromise;
+  }
+
   private clearShutdownTimers(): void {
     if (this.terminateTimer) {
       clearTimeout(this.terminateTimer);
@@ -1989,7 +2027,7 @@ export class SessionHost extends EventEmitter {
   }
 
   private terminateAfterGracefulDisconnect(): void {
-    if (this.proc.exitCode !== null || this.proc.signalCode !== null) return;
+    if (!this.proc.pid || this.proc.exitCode !== null || this.proc.signalCode !== null) return;
     appendDiagnostic("session-host", "shutdown-escalation", undefined, {
       pid: this.proc.pid,
       sessionFile: this.sessionFile,
@@ -2016,10 +2054,7 @@ export class SessionHost extends EventEmitter {
 
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
-    this.stopPromise =
-      this.proc.exitCode !== null || this.proc.signalCode !== null
-        ? Promise.resolve()
-        : new Promise<void>((resolve) => this.proc.once("exit", () => resolve()));
+    this.stopPromise = this.waitForProcessExit();
     if (this.shutdownRequested) return this.stopPromise;
     this.shutdownRequested = true;
     this.faultInjector.dispose();
@@ -2044,7 +2079,8 @@ export class SessionHost extends EventEmitter {
       transport: this.proc.connected ? "ipc-disconnect" : "signal",
     });
 
-    if (this.proc.exitCode !== null || this.proc.signalCode !== null) return this.stopPromise;
+    if (!this.proc.pid || this.proc.exitCode !== null || this.proc.signalCode !== null)
+      return this.stopPromise;
 
     // host.mjs performs its durable runtime/session cleanup on IPC disconnect.
     // Sending SIGTERM first bypasses that handler; signal-exit listeners from

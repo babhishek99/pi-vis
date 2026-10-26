@@ -88,6 +88,7 @@ export function createStateAuthority({
   runWithSurface = (_surface, operation) => operation(),
   hasPendingBashPreparation = () => false,
   cancelPendingBashPreparation = () => 0,
+  cancelActiveCommand = () => false,
 }) {
   let session = initialSession;
   // A confined search open may give Pi an inode-stable transport path
@@ -880,8 +881,9 @@ export function createStateAuthority({
         return isStrictObject(intent, ["kind", "name"]) && typeof intent.name === "string";
       case "export":
         return (
-          Object.keys(intent).every((key) => ["kind", "outputPath"].includes(key)) &&
-          isOptional(intent.outputPath, (value) => typeof value === "string")
+          Object.keys(intent).every((key) => ["kind", "outputPath", "forShare"].includes(key)) &&
+          isOptional(intent.outputPath, (value) => typeof value === "string") &&
+          isOptional(intent.forShare, (value) => typeof value === "boolean")
         );
       default:
         return false;
@@ -1742,6 +1744,10 @@ export function createStateAuthority({
         return { level: value.level ?? intent?.level ?? "off" };
       case "rename":
         return { name: value.name ?? intent?.name ?? "" };
+      case "export":
+        if (value.cancelled === true) return { cancelled: true };
+        if (typeof value.shareUrl === "string") return { shareUrl: value.shareUrl };
+        return typeof value.path === "string" ? { path: value.path } : undefined;
       case "reload":
         return {
           ...(value.successorIdentity ? { successorIdentity: value.successorIdentity } : {}),
@@ -4290,6 +4296,8 @@ export function createStateAuthority({
         if (session.isBashRunning) session.abortBash();
         cancelPendingBashPreparation();
         value = { ...base, disposition: "abort_requested", target: "bash" };
+      } else if (cancelActiveCommand()) {
+        value = { ...base, disposition: "abort_requested", target: "command" };
       } else if (submitting > 0 || unresolvedAdmissions > 0) {
         value = {
           ...base,

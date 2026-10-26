@@ -1,5 +1,6 @@
 import type { SessionId } from "@shared/ids.js";
 import type { MarkdownTransformMessageType } from "@shared/pi-protocol/markdown-transform.js";
+import { type RenderedToolData, RenderedToolDataSchema } from "@shared/pi-protocol/responses.js";
 import type { RuntimeIdentity } from "@shared/pi-protocol/runtime-state.js";
 import type { TranscriptStyle } from "@shared/settings.js";
 import type React from "react";
@@ -797,10 +798,18 @@ function DiffPayload({ text, lines }: { text: string; lines: string[] }): React.
   );
 }
 
+function formatExecutionDuration(durationMs: number): string {
+  return durationMs < 1_000
+    ? `${Math.round(durationMs)} ms`
+    : `${(durationMs / 1_000).toFixed(durationMs < 10_000 ? 1 : 0)} s`;
+}
+
 const ToolCallBlock = memo(function ToolCallBlock({
+  sessionId,
   data,
   preserveScroll,
 }: {
+  sessionId: SessionId;
   data: ToolCallBlockData;
   preserveScroll: (mutate: () => void) => void;
 }): React.ReactElement {
@@ -825,6 +834,7 @@ const ToolCallBlock = memo(function ToolCallBlock({
       : null,
     data.diff !== undefined || data.patch !== undefined ? "changes" : null,
     isObjectRecord(truncation) && truncation.truncated === true ? "truncated" : null,
+    data.durationMs === undefined ? null : formatExecutionDuration(data.durationMs),
   ]
     .filter(Boolean)
     .join(" · ");
@@ -879,6 +889,7 @@ const ToolCallBlock = memo(function ToolCallBlock({
       }
       trailing={trailing}
     >
+      <ExtensionToolRender sessionId={sessionId} toolCallId={data.toolCallId} />
       <ProvenanceGrid
         values={[
           ["Tool", data.toolName],
@@ -977,11 +988,7 @@ const BashBlock = memo(function BashBlock({
             ? `exit ${data.exitCode}`
             : "complete";
   const duration =
-    data.durationMs === undefined
-      ? undefined
-      : data.durationMs < 1_000
-        ? `${Math.round(data.durationMs)} ms`
-        : `${(data.durationMs / 1_000).toFixed(data.durationMs < 10_000 ? 1 : 0)} s`;
+    data.durationMs === undefined ? undefined : formatExecutionDuration(data.durationMs);
   const shellPrefix = data.excludeFromContext ? "!!" : "!";
   const accessibleContext = data.excludeFromContext ? "context excluded" : "context included";
   const virtualized =
@@ -1347,6 +1354,136 @@ function observeCustomEntryResize(element: Element | null, callback: () => void)
     }
   };
 }
+
+/** Public extension tool renderers stay in the host; ANSI is presentation only. */
+const ExtensionToolRender = memo(function ExtensionToolRender({
+  sessionId,
+  toolCallId,
+}: { sessionId: SessionId; toolCallId: string }): React.ReactElement {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const measurementBoxRef = useRef<HTMLSpanElement>(null);
+  const probeRef = useRef<HTMLSpanElement>(null);
+  const [cols, setCols] = useState<number>();
+  const [rendered, setRendered] = useState<
+    { ownerKey: string; value: RenderedToolData } | undefined
+  >();
+  // Select primitives: a render query can publish an otherwise unchanged
+  // semantic frame and must not create a query/frame/query feedback loop.
+  const hostInstanceId = useSessionsStore(
+    (state) => authoritySnapshotFor(state.sessions.get(sessionId))?.owner.hostInstanceId,
+  );
+  const sessionEpoch = useSessionsStore(
+    (state) => authoritySnapshotFor(state.sessions.get(sessionId))?.owner.sessionEpoch,
+  );
+  const runtime = useMemo(
+    () =>
+      hostInstanceId !== undefined && sessionEpoch !== undefined
+        ? { hostInstanceId, sessionEpoch }
+        : undefined,
+    [hostInstanceId, sessionEpoch],
+  );
+  const ownerKey = runtime ? `${runtime.hostInstanceId}:${runtime.sessionEpoch}` : undefined;
+
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    const measurementBox = measurementBoxRef.current;
+    const probe = probeRef.current;
+    if (!host || !measurementBox || !probe) return;
+    const measure = (): void =>
+      queueCustomEntryMeasurement({ host, measurementBox, probe, applyColumns: setCols });
+    measure();
+    const stopFeed = observeCustomEntryResize(host.closest(".transcript-blocks"), measure);
+    const stopProbe = observeCustomEntryResize(probe, measure);
+    return () => {
+      stopFeed();
+      stopProbe();
+      cancelCustomEntryMeasurement(host);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!runtime || cols === undefined || !ownerKey) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async (): Promise<void> => {
+      try {
+        const current = useSessionsStore.getState().sessions.get(sessionId);
+        const snapshot = authoritySnapshotFor(current);
+        if (!snapshot || !sessionMatchesRuntime(current, runtime)) return;
+        const semantic = current?.authorityProjection?.semantic;
+        const result = await querySession(
+          sessionId,
+          { type: "render_tool", toolCallId, cols, expanded: true },
+          {
+            owner: runtime,
+            ...(semantic?.state === "following" ? { cursor: semantic.cursor } : {}),
+          },
+        );
+        if (
+          cancelled ||
+          result.status !== "ok" ||
+          result.owner.hostInstanceId !== runtime.hostInstanceId ||
+          result.owner.sessionEpoch !== runtime.sessionEpoch ||
+          !sessionMatchesRuntime(useSessionsStore.getState().sessions.get(sessionId), runtime)
+        ) {
+          return;
+        }
+        const parsed = result.response.success
+          ? RenderedToolDataSchema.safeParse(result.response.data)
+          : undefined;
+        const value = parsed?.success ? parsed.data : undefined;
+        setRendered((prior) =>
+          value &&
+          (prior?.ownerKey !== ownerKey ||
+            prior.value.ansi !== value.ansi ||
+            prior.value.error !== value.error ||
+            prior.value.rendered !== value.rendered)
+            ? { ownerKey, value }
+            : value
+              ? prior
+              : undefined,
+        );
+      } catch {
+        if (!cancelled) setRendered(undefined);
+      } finally {
+        // ToolRenderContext.invalidate() can occur after the last tool event.
+        // A bounded poll while this disclosure is mounted also discovers late
+        // renderer registrations, without creating a semantic mutation stream.
+        if (!cancelled) timer = setTimeout(() => void refresh(), 1_000);
+      }
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [cols, ownerKey, runtime, sessionId, toolCallId]);
+
+  const value = rendered?.ownerKey === ownerKey ? rendered?.value : undefined;
+  return (
+    <div ref={hostRef} className="tool-card__extension-host">
+      <span ref={measurementBoxRef} className="custom-entry__measurement-box" aria-hidden="true">
+        <span ref={probeRef} className="custom-entry__measure">
+          0000000000
+        </span>
+      </span>
+      {value?.rendered && (
+        <section className="tool-card__section">
+          <SectionHeader
+            title="Extension view"
+            meta={value.error ? "renderer error" : "custom rendering"}
+            copyText={value.ansi ?? ""}
+          />
+          <pre
+            className={`tool-card__extension-render${value.error ? " tool-card__extension-render--error" : ""}`}
+          >
+            <AnsiText text={value.ansi ?? ""} />
+          </pre>
+        </section>
+      )}
+    </div>
+  );
+});
 
 const ExtensionMessageRender = memo(function ExtensionMessageRender({
   sessionId,
@@ -1944,7 +2081,9 @@ function TranscriptItemView({
       if (!hasAssistantContent(block.data)) return null;
       return <AssistantBlock data={block.data} />;
     case "tool_call":
-      return <ToolCallBlock data={block.data} preserveScroll={preserveScroll} />;
+      return (
+        <ToolCallBlock sessionId={sessionId} data={block.data} preserveScroll={preserveScroll} />
+      );
     case "bash":
       return <BashBlock data={block.data} preserveScroll={preserveScroll} />;
     case "compaction":

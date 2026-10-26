@@ -65,6 +65,16 @@ tab when present, then refresh the workspace session list. Focus then returns to
 original button if the operation failed and its row survived, or to the nearest
 surviving session/new-session control after a successful archive.
 
+Each live session row also exposes **Force restart host** immediately beside
+Archive, including when its host is starting, failed, or unavailable. Its
+danger-toned app-owned confirmation defaults focus to Cancel and states that
+running work is interrupted while saved conversation history remains. Confirm
+invokes the unconditional main-owned hard restart; it never requires a following
+authority plane or an idle host. Dialog focus, Escape, and backdrop behavior
+follow the archive convention. Confirmation closes the dialog immediately and
+leaves restart reachable during successor startup; startup failures surface through
+the ordinary session status and a toast.
+
 ### Session activity indicators
 
 The flashing sidebar dot means **working**, not merely model streaming. Its single

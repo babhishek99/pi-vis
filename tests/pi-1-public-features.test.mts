@@ -6,7 +6,7 @@ import { ModelRegistry, ModelRuntime, SettingsManager } from "@earendil-works/pi
 import { describe, expect, it, vi } from "vitest";
 
 const piPackageRoot = join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent");
-const piDependenciesRoot = join(piPackageRoot, "node_modules", "@earendil-works");
+const piDependenciesRoot = join(process.cwd(), "node_modules", "@earendil-works");
 
 function dependencyPath(packageName: string, ...segments: string[]): string {
   return join(piDependenciesRoot, packageName, ...segments);
@@ -34,7 +34,7 @@ function publicDependencyUrl(packageName: string, subpath = "."): string {
   return pathToFileURL(dependencyPath(packageName, importPath)).href;
 }
 
-describe("Pi 1.0 public feature compatibility", () => {
+describe("Pi 1.4 public feature compatibility", () => {
   it("marks only explicitly subscription-backed OAuth providers as subscriptions", async () => {
     const agentDir = mkdtempSync(join(tmpdir(), "pivis-pi1-providers-"));
     try {
@@ -106,7 +106,9 @@ describe("Pi 1.0 public feature compatibility", () => {
           },
         },
       }),
-    ).toBe("CallToolResult<{ count: number; }>");
+    ).toBe(
+      "{ _meta?: { [key: string]: unknown; }; content?: Array<{ [key: string]: unknown; }>; isError?: boolean; structuredContent?: { count: number; }; }",
+    );
 
     const sandbox = new codemode.CodemodeSandbox({
       timeoutMs: 5_000,
@@ -136,7 +138,10 @@ describe("Pi 1.0 public feature compatibility", () => {
       "utf8",
     );
     const publicTypes = readFileSync(join(piPackageRoot, "dist", "index.d.ts"), "utf8");
-    expect(settingsTypes).toContain('export type QuietStartup = boolean | "header";');
+    expect(settingsTypes).toContain("QuietStartup");
+    expect(
+      readFileSync(join(piPackageRoot, "dist", "core", "settings-schema.d.ts"), "utf8"),
+    ).toContain('export type QuietStartup = NonNullable<SettingsInput["quietStartup"]>;');
     expect(publicTypes).toContain("type QuietStartup");
 
     const settings = SettingsManager.inMemory();

@@ -51,7 +51,7 @@ const ToolCallContentSchema = z
     type: z.literal("toolCall"),
     id: z.string(),
     name: z.string(),
-    arguments: z.record(z.unknown()),
+    arguments: z.record(z.string(), z.unknown()),
     thoughtSignature: z.string().optional(),
     namespace: z.string().optional(),
   })
@@ -69,7 +69,7 @@ const SystemMessageSchema = z
   .object({
     role: z.literal("system"),
     content: z.union([z.string(), z.array(TextContentSchema)]),
-    sections: z.record(z.string().nullable()).optional(),
+    sections: z.record(z.string(), z.string().nullable()).optional(),
     toolsAdded: z.array(z.unknown()).optional(),
     toolsRemoved: z.array(z.unknown()).optional(),
     timestamp: z.number(),
@@ -83,7 +83,7 @@ const NestedToolCallsSchema = z
         .object({
           id: z.string(),
           name: z.string(),
-          arguments: z.record(z.unknown()).optional(),
+          arguments: z.record(z.string(), z.unknown()).optional(),
           argumentsBytes: z.number().optional(),
           status: z.enum(["ok", "error", "unfinished"]),
           durationMs: z.number().optional(),

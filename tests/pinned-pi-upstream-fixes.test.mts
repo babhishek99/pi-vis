@@ -98,7 +98,7 @@ describe("Pinned Pi upstream regression fixes", () => {
 
   it("keeps fragmented Mistral tool-call deltas on one indexed call", async () => {
     const modulePath = path.resolve(
-      "node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/api/mistral-conversations.js",
+      "node_modules/@earendil-works/pi-ai/dist/api/mistral-conversations.js",
     );
     const { stream } = (await import(pathToFileURL(modulePath).href)) as {
       stream: (

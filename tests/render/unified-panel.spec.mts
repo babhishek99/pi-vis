@@ -339,6 +339,9 @@ test.describe("Unified-TUI panel (factory setWidget) — renderer", () => {
     await expect(panel).toBeVisible({ timeout: 20_000 });
     await expect(panel.locator(".xterm-rows")).toContainText("Fleet", { timeout: 15_000 });
 
+    // Xterm paints before the scheduled content-sizing pass settles.
+    await expect.poll(() => panel.evaluate((card) => card.style.overflowY)).toBe("hidden");
+
     // The grid tracks the content (mount holds it + a one-row sentinel); the card
     // clips down to the content. A few-row roster is well under the ~50%-column
     // cap, so the card is shorter than the mount (the gap is the trimmed blanks)
@@ -366,6 +369,9 @@ test.describe("Unified-TUI panel (factory setWidget) — renderer", () => {
     const panel = page.locator(".unified-panel");
     await expect(panel).toBeVisible({ timeout: 20_000 });
     await expect(panel.locator(".xterm-rows")).toContainText("agent-01", { timeout: 15_000 });
+
+    // The final sizing pass enables card scrolling after the grid converges.
+    await expect.poll(() => panel.evaluate((card) => card.style.overflowY)).toBe("auto");
 
     // Content taller than the cap → the card caps at ~half the column and
     // scrolls (the spec's "scrollbar only past the max"). It opens scrolled to

@@ -650,14 +650,25 @@ async function executeExport(
   sessionId: SessionId,
   outputPath: string | undefined,
   deps: ExecuteDeps,
+  forShare = false,
 ): Promise<IntentCompletion> {
   const completion = await dispatchAndAwait(
     sessionId,
-    outputPath === undefined ? { kind: "export" } : { kind: "export", outputPath },
+    forShare
+      ? { kind: "export", forShare: true }
+      : outputPath === undefined
+        ? { kind: "export" }
+        : { kind: "export", outputPath },
     deps,
   );
   const error = outcomeError(completion);
-  if (error) deps.addToast(sessionId, `Failed to export session: ${error}`, "error");
+  if (error)
+    deps.addToast(
+      sessionId,
+      `Failed to ${forShare ? "share" : "export"} session: ${error}`,
+      "error",
+    );
+  else if (forShare) return completion;
   else if (completion.outcome.kind === "export" && completion.outcome.result?.path)
     deps.addToast(sessionId, `Exported session: ${completion.outcome.result.path}`, "success");
   else deps.addToast(sessionId, "Export completed without an output path", "error");
@@ -667,15 +678,35 @@ async function executeExport(
 async function executeShare(sessionId: SessionId, deps: ExecuteDeps): Promise<void> {
   // Export is a child-owned effect. Never ask main to invoke Pi or infer a
   // path: wait for the owner-bound authority outcome first.
-  const completion = await executeExport(sessionId, undefined, deps);
+  const completion = await executeExport(sessionId, undefined, deps, true);
   if (completion.outcome.state !== "completed") return;
+  const owner = completion.outcome.owner;
+  const stillCurrentOwner = () => {
+    const current = deps.getIntentObservation?.(sessionId)?.owner;
+    return (
+      current?.hostInstanceId === owner.hostInstanceId &&
+      current.sessionEpoch === owner.sessionEpoch
+    );
+  };
+  if (
+    !stillCurrentOwner() ||
+    (completion.outcome.kind === "export" && completion.outcome.result?.cancelled)
+  )
+    return;
+  const shareUrl =
+    completion.outcome.kind === "export" ? completion.outcome.result?.shareUrl : undefined;
+  if (shareUrl) {
+    await deps.copyToClipboard(shareUrl);
+    if (!stillCurrentOwner()) return;
+    deps.addToast(sessionId, `Share URL: ${shareUrl}`, "success");
+    return;
+  }
   const exportedPath =
     completion.outcome.kind === "export" ? completion.outcome.result?.path : undefined;
   if (!exportedPath) {
     deps.addToast(sessionId, "Export completed without an output path", "error");
     return;
   }
-  const owner = completion.outcome.owner;
   const result = (await deps.invoke("session.share", {
     sessionId,
     expectedHostInstanceId: owner.hostInstanceId,
@@ -683,9 +714,11 @@ async function executeShare(sessionId: SessionId, deps: ExecuteDeps): Promise<vo
     exportIntentId: completion.intentId,
     exportedPath,
   })) as unknown as { ok: boolean; url?: string; gistUrl?: string; error?: string };
+  if (!stillCurrentOwner()) return;
   if (!result.ok)
     return deps.addToast(sessionId, result.error ?? "Failed to share session", "error");
   if (result.url) await deps.copyToClipboard(result.url);
+  if (!stillCurrentOwner()) return;
   deps.addToast(
     sessionId,
     result.gistUrl

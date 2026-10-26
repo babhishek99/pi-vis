@@ -44,6 +44,7 @@ const COMMAND_TYPES = [
   "set_label",
   "render_entry",
   "render_message",
+  "render_tool",
   "transform_markdown",
   "get_cache_miss_notices",
 ] as const satisfies readonly PiRpcCommand["type"][];
@@ -64,6 +65,20 @@ describe("Pi command admission policy", () => {
         class: "effectful",
         submissionOnly: true,
       });
+    }
+  });
+
+  it("accepts only bounded tool-render selectors", () => {
+    expect(
+      PiRpcCommandSchema.safeParse({ type: "render_tool", toolCallId: "call-a", cols: 80 }).success,
+    ).toBe(true);
+    for (const invalid of [
+      { type: "render_tool", toolCallId: "", cols: 80 },
+      { type: "render_tool", toolCallId: "call-a", cols: 19 },
+      { type: "render_tool", toolCallId: "call-a", cols: 241 },
+      { type: "render_tool", toolCallId: "call-a" },
+    ]) {
+      expect(PiRpcCommandSchema.safeParse(invalid).success).toBe(false);
     }
   });
 

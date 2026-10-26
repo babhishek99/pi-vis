@@ -13,6 +13,19 @@ export const PiRpcResponseSchema = z.object({
 
 export type PiRpcResponse = z.infer<typeof PiRpcResponseSchema>;
 
+/** Display-only ANSI from host-owned tool renderers; never canonical result data. */
+export const RenderedToolDataSchema = z
+  .object({
+    rendered: z.boolean(),
+    ansi: z
+      .string()
+      .max(256 * 1024)
+      .optional(),
+    error: z.boolean().optional(),
+  })
+  .strict();
+export type RenderedToolData = z.infer<typeof RenderedToolDataSchema>;
+
 const SessionStateModelSchema = z
   .object({
     id: z.string(),
@@ -56,7 +69,7 @@ export const ModelInfoSchema = z
     reasoning: z.boolean().optional(),
     // Per-level provider mapping. A null value explicitly disables that level;
     // xhigh/max are opt-in and are supported only when their mapping exists.
-    thinkingLevelMap: z.record(z.string().nullable()).optional(),
+    thinkingLevelMap: z.record(z.string(), z.string().nullable()).optional(),
     // Accepted input modalities. Pi's model registry defaults this to
     // ["text"]; vision-capable models also list "image". The composer
     // uses it to gate image attachment — sending an image to a text-only
@@ -295,7 +308,7 @@ export interface SessionTreeNode {
   labelTimestamp?: string | undefined;
 }
 
-export const SessionTreeNodeSchema: z.ZodType<SessionTreeNode, z.ZodTypeDef, unknown> = z.lazy(() =>
+export const SessionTreeNodeSchema: z.ZodType<SessionTreeNode, unknown> = z.lazy(() =>
   z.object({
     entry: SessionTreeEntrySchema,
     children: z.array(SessionTreeNodeSchema),

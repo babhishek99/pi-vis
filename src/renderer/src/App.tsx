@@ -35,10 +35,12 @@ import { useGlobalEscapeInterrupt } from "./hooks/useGlobalEscapeInterrupt.js";
 import { useShellViewportReveal } from "./hooks/useShellViewportReveal.js";
 import { AuthorityAttachRetry, authorityNeedsBaseline } from "./lib/authority-attach-retry.js";
 import { RENDERER_GENERATION } from "./lib/renderer-generation.js";
+import { waitForRuntimeOwner } from "./lib/wait-for-runtime-owner.js";
 import { useAppUpdatesStore } from "./stores/app-updates-store.js";
 import { openDiffForSession, useDiffStore } from "./stores/diff-store.js";
 import { useExtensionUpdatesStore } from "./stores/extension-updates-store.js";
 import {
+  canRetainTransitionAuthority,
   liveShellPresentationFor,
   sessionMatchesRuntime,
   useSessionsStore,
@@ -114,7 +116,15 @@ export function App(): React.ReactElement {
   useEffect(() => {
     const unsubscribe = useSessionsStore.subscribe((state, previousState) => {
       for (const sessionId of previousState.sessions.keys()) {
-        if (!state.sessions.has(sessionId)) authorityAttachRetryRef.current?.cancel(sessionId);
+        const session = state.sessions.get(sessionId);
+        const previous = previousState.sessions.get(sessionId);
+        if (
+          !session ||
+          (session.status === "starting" && previous?.status !== "starting") ||
+          (session.availability !== "available" && session.availability !== previous?.availability)
+        ) {
+          authorityAttachRetryRef.current?.cancel(sessionId);
+        }
       }
     });
     return () => {
@@ -506,6 +516,7 @@ export function App(): React.ReactElement {
 
   // Subscribe to IPC events
   useEffect(() => {
+    const pendingFileAdoptions = new Map<SessionId, AbortController>();
     const unsubEvent = window.pivis.on("session.events", ({ sessionId, events }) => {
       const projection = useSessionsStore
         .getState()
@@ -536,6 +547,10 @@ export function App(): React.ReactElement {
       // not churn renderer session objects for every compatibility heartbeat;
       // semantic snapshots arrive exclusively through authority frames.
       if (current?.availability !== state.availability) applyRuntimeState(sid, state);
+      // A planned lifecycle transition fences ingress, while the predecessor
+      // can still publish its contiguous terminal intent frame. Keep that
+      // ordered evidence reducible; transport availability fences controls.
+      if (canRetainTransitionAuthority(current, state)) return;
       if (state.availability === "available") {
         const session = useSessionsStore.getState().sessions.get(sid);
         const projection = session?.authorityProjection;
@@ -673,24 +688,27 @@ export function App(): React.ReactElement {
     const unsubFileChanged = window.pivis.on(
       "session.fileChanged",
       ({ sessionId, hostInstanceId, sessionEpoch, sessionFile, sessionName }) => {
+        const sid = sessionId as SessionId;
+        pendingFileAdoptions.get(sid)?.abort();
+        const controller = new AbortController();
+        pendingFileAdoptions.set(sid, controller);
+        const currentEvent = (): boolean =>
+          !controller.signal.aborted && pendingFileAdoptions.get(sid) === controller;
         void (async () => {
-          const sid = sessionId as SessionId;
-          let current = useSessionsStore.getState().sessions.get(sid);
-          if (!sessionMatchesRuntime(current, { hostInstanceId, sessionEpoch })) {
-            await requestAttach(sid);
-            current = useSessionsStore.getState().sessions.get(sid);
-          }
-          // A predecessor attach cycle may have been in flight when this
-          // replacement event arrived. `requestAttach` spans its bounded retry
-          // lifecycle, so retain this one-shot file payload until that cycle
-          // either installs the successor or becomes unavailable. One fresh
-          // cycle covers the case where the joined cycle belonged entirely to
-          // the predecessor.
-          if (!sessionMatchesRuntime(current, { hostInstanceId, sessionEpoch })) {
-            await requestAttach(sid);
-            current = useSessionsStore.getState().sessions.get(sid);
-          }
-          if (!sessionMatchesRuntime(current, { hostInstanceId, sessionEpoch })) return;
+          const owner = { hostInstanceId, sessionEpoch };
+          const matched = await waitForRuntimeOwner({
+            owner,
+            getSession: () => useSessionsStore.getState().sessions.get(sid),
+            subscribe: (listener) => useSessionsStore.subscribe(listener),
+            requestAttach: () => requestAttach(sid, true),
+            signal: controller.signal,
+          });
+          if (
+            !matched ||
+            !currentEvent() ||
+            !sessionMatchesRuntime(useSessionsStore.getState().sessions.get(sid), owner)
+          )
+            return;
           // Re-assert the session as active. Same sessionId re-points to the new
           // file, so activeSessionId is usually already correct — but explicitly
           // setting it clears any stale unreadStatus on the previously-active
@@ -700,13 +718,14 @@ export function App(): React.ReactElement {
           // Adopt the new file + reseed the transcript + refresh the workspace
           // session list. The single shared helper keeps this identical to the
           // Composer and unified-TUI submit paths (no drift).
-          await adoptSessionFileAndHydrate(sid, sessionFile, sessionName, {
-            hostInstanceId,
-            sessionEpoch,
+          await adoptSessionFileAndHydrate(sid, sessionFile, sessionName, owner, currentEvent);
+        })()
+          .catch((error) => {
+            console.error("Failed to adopt changed session file", error);
+          })
+          .finally(() => {
+            if (pendingFileAdoptions.get(sid) === controller) pendingFileAdoptions.delete(sid);
           });
-        })().catch((error) => {
-          console.error("Failed to adopt changed session file", error);
-        });
       },
     );
 
@@ -733,6 +752,8 @@ export function App(): React.ReactElement {
     });
 
     return () => {
+      for (const controller of pendingFileAdoptions.values()) controller.abort();
+      pendingFileAdoptions.clear();
       unsubEvent();
       unsubPublication();
       unsubRuntime();

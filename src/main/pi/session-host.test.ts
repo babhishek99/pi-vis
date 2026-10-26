@@ -1172,6 +1172,54 @@ describe("SessionHost", () => {
       });
     });
 
+    it("force-stops immediately even when a graceful stop is already blocked", async () => {
+      fake.disconnect = () => {
+        fake.disconnectCalls++;
+        fake.connected = false;
+      };
+      const graceful = host.stop();
+      const forced = host.forceStop();
+      expect(forced).toBe(graceful);
+      expect(fake.killSignal).toBe("SIGKILL");
+      await forced;
+    });
+
+    it("force-stops a pre-ready host without sending any child protocol", async () => {
+      const readiness = host.waitForReady().catch((error: unknown) => error);
+      const before = fake.sent.length;
+      const stopped = host.forceStop();
+      expect(fake.killSignal).toBe("SIGKILL");
+      expect(fake.disconnectCalls).toBe(0);
+      expect(fake.sent).toHaveLength(before);
+      await stopped;
+      await expect(readiness).resolves.toBeInstanceOf(Error);
+    });
+
+    it.each([false, true])(
+      "settles a failed OS spawn without an exit event (prior graceful stop: %s)",
+      async (gracefulFirst) => {
+        const previousFork = __forkOverride.fn;
+        __forkOverride.fn = null;
+        try {
+          const failed = new SessionHost(
+            "/fake/pi",
+            process.cwd(),
+            undefined,
+            {},
+            join(__dirname, "__missing-host-node__"),
+          );
+          const readiness = failed.waitForReady().catch((error: unknown) => error);
+          // Stop synchronously, before Node delivers the failed-spawn error.
+          const initial = gracefulFirst ? failed.stop() : failed.forceStop();
+          expect(failed.forceStop()).toBe(initial);
+          await expect(initial).resolves.toBeUndefined();
+          await expect(readiness).resolves.toBeInstanceOf(Error);
+        } finally {
+          __forkOverride.fn = previousFork;
+        }
+      },
+    );
+
     it("bounds a host that ignores graceful disconnect and SIGTERM with SIGKILL", () => {
       const signals: Array<NodeJS.Signals | undefined> = [];
       (fake as unknown as { signalCode: NodeJS.Signals | null }).signalCode = null;

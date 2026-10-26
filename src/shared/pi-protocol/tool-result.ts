@@ -36,6 +36,8 @@ export interface ToolResultData {
   metadata: Record<string, unknown> | undefined;
   /** Usage attributed to the tool execution itself, when reported by Pi 0.81+. */
   usage: PiUsage | undefined;
+  /** Pi-recorded monotonic execution time; absent for tools that never ran. */
+  durationMs: number | undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -131,6 +133,7 @@ export function extractToolResult(value: unknown): ToolResultData {
       patch: undefined,
       metadata: undefined,
       usage: undefined,
+      durationMs: undefined,
     };
   }
   if (!isRecord(value)) {
@@ -145,6 +148,7 @@ export function extractToolResult(value: unknown): ToolResultData {
       patch: undefined,
       metadata: undefined,
       usage: undefined,
+      durationMs: undefined,
     };
   }
 
@@ -182,5 +186,11 @@ export function extractToolResult(value: unknown): ToolResultData {
     patch,
     metadata: extractResultMetadata(value),
     usage: parsedUsage.success ? parsedUsage.data : undefined,
+    durationMs:
+      typeof value.durationMs === "number" &&
+      Number.isFinite(value.durationMs) &&
+      value.durationMs >= 0
+        ? value.durationMs
+        : undefined,
   };
 }

@@ -1114,6 +1114,15 @@ export function initIpc(win: BrowserWindow): void {
     return { closed: true as const };
   });
 
+  ipcMain.handle("session.forceRestart", async (_evt, args: { sessionId: SessionId }) => {
+    logTestIpcInvocation("session.forceRestart", args);
+    if (!registry) throw new Error("Session registry is unavailable");
+    const piInfo = getPinnedPi(getSettings().piBinaryPath);
+    if (!piInfo) throw new Error("Bundled pi runtime not found (broken install)");
+    await registry.forceRestartSession(args.sessionId, piInfo.path, getHostEnv());
+    return { restarted: true as const };
+  });
+
   ipcMain.handle(
     "session.loadHistory",
     async (

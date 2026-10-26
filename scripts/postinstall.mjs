@@ -126,8 +126,8 @@ export function runPostinstall({
   patchNodePtyFn = patchNodePty,
 } = {}) {
   const electron = provisionElectronFn();
-  // The published Pi shrinkwrap pins a vulnerable transitive version. Verify
-  // that npm honored the audited root-lock closure before any later patch can
+  // Verify that npm honored the audited Pi dependency security closure
+  // before any later patch can
   // make a partially provisioned install look usable.
   const piSecurity = verifyPiSecurityClosureFn();
   // Preserve the exact-version/source fail-closed native patch after Electron

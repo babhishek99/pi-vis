@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { SessionId } from "@shared/ids.js";
@@ -44,6 +44,44 @@ describe("owner-bound sharing", () => {
       effects.run(sessionId, owner, "export-1", "/tmp/export.html", () => false),
     ).resolves.toEqual({ ok: false, error: "Session changed before share creation" });
     expect(createGist).not.toHaveBeenCalled();
+  });
+
+  it("does not start gh when the owner changes while the shell environment is resolving", async () => {
+    let resolveEnv!: (env: Record<string, string>) => void;
+    vi.mocked(getSubprocessEnv).mockReturnValue(new Promise((resolve) => (resolveEnv = resolve)));
+    let current = true;
+    const effects = new OwnerBoundShareEffects();
+    const result = effects.run(
+      sessionId,
+      owner,
+      "export-delayed",
+      "/tmp/export.html",
+      () => current,
+    );
+    current = false;
+    // A missing gh would return the installation error if an OS effect ran.
+    resolveEnv({ PATH: "/does-not-exist" });
+    await expect(result).resolves.toEqual({
+      ok: false,
+      error: "Session changed before share creation",
+    });
+  });
+
+  it("rechecks the owner after gh authentication and before spawning the upload", async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), "pi-vis-fake-gh-"));
+    const gh = path.join(tempDir, "gh");
+    const calls = path.join(tempDir, "calls");
+    await writeFile(gh, '#!/bin/sh\necho "$1" >> "$CALLS"\nexit 0\n');
+    await chmod(gh, 0o755);
+    vi.mocked(getSubprocessEnv).mockResolvedValue({ PATH: tempDir, CALLS: calls });
+    let ownerChecks = 0;
+    await expect(createGistForExport("/tmp/export.html", () => ++ownerChecks < 3)).resolves.toEqual(
+      {
+        ok: false,
+        error: "Session changed before share creation",
+      },
+    );
+    expect(await readFile(calls, "utf8")).toBe("auth\n");
   });
 
   it("does not replay a lost gist acknowledgement", async () => {

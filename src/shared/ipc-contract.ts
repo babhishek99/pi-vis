@@ -518,6 +518,8 @@ export interface IpcInvokeContract {
   };
   /** Silently dispose the live host and remove this renderer tab's session. */
   "session.close": { req: { sessionId: SessionId }; res: { closed: true } };
+  /** Unconditional main-owned SIGKILL and fresh host activation. */
+  "session.forceRestart": { req: { sessionId: SessionId }; res: { restarted: true } };
   /** Respond to a unified-TUI editor submit (host→renderer round-trip).
    *  The host's `editor.onSubmit` has already committed the visible clear and
    *  sends an immutable source to the renderer's shared submit pipeline.

@@ -117,8 +117,8 @@ function applySgr(style: AnsiStyle, params: number[]): AnsiStyle {
   return next;
 }
 
-// CSI ... letter | OSC ... (BEL or ST) | lone 2-char escapes
-const ANSI_TOKEN = /\x1b\[([0-9;]*)m|\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b./g;
+// CSI ... letter | OSC/APC ... (BEL or ST) | lone 2-char escapes
+const ANSI_TOKEN = /\x1b\[([0-9;]*)m|\x1b\[[0-9;?]*[A-Za-z]|\x1b[\]_][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b./g;
 
 export function parseAnsi(text: string): AnsiSpan[] {
   const spans: AnsiSpan[] = [];

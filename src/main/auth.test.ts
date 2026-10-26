@@ -304,7 +304,7 @@ describe("listAuthStatus", () => {
 
   it("matches ModelRuntime's Bedrock collision precedence", async () => {
     const { builtinModels } = await import(
-      "../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/providers/all.js"
+      "../../node_modules/@earendil-works/pi-ai/dist/providers/all.js"
     );
     const environment = {
       AWS_BEARER_TOKEN_BEDROCK: "bearer-secret",

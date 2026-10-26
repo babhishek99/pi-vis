@@ -263,6 +263,15 @@ export const RenderMessageCommandSchema = BaseCommand.extend({
   expanded: z.boolean().optional(),
 });
 
+// Pi 1.4's tool renderer resolvers execute in the SDK host against the
+// canonical public tool call/result, selected without renderer-supplied data.
+export const RenderToolCommandSchema = BaseCommand.extend({
+  type: z.literal("render_tool"),
+  toolCallId: z.string().min(1),
+  cols: z.number().int().min(20).max(240),
+  expanded: z.boolean().optional(),
+});
+
 // Pi >= 0.84 display-only extension Markdown transformers. The SDK host owns
 // extension functions; the renderer sends bounded batches with Pi's public
 // rendering context and receives only transformed strings.
@@ -319,6 +328,7 @@ export const PiRpcCommandSchema = z.discriminatedUnion("type", [
   SetLabelCommandSchema,
   RenderEntryCommandSchema,
   RenderMessageCommandSchema,
+  RenderToolCommandSchema,
   TransformMarkdownCommandSchema,
   GetCacheMissNoticesCommandSchema,
 ]);
@@ -380,6 +390,7 @@ export const PI_COMMAND_POLICY = {
   set_label: { class: "idempotent" },
   render_entry: { class: "read_only" },
   render_message: { class: "read_only" },
+  render_tool: { class: "read_only" },
   transform_markdown: { class: "read_only" },
   get_cache_miss_notices: { class: "read_only" },
 } as const satisfies Record<PiRpcCommand["type"], PiCommandPolicy>;

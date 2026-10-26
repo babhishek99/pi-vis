@@ -85,6 +85,7 @@ let suppressUnifiedPanelResize = false;
 const previewHooks = {
   /** Count of session interrupt requests dispatched to the stub. */
   abortCalls: 0,
+  forceRestartCalls: 0,
   /** Explicit search opens; preview selection/context never increments this. */
   searchOpenCalls: 0,
   /** Forces the search-open lifecycle snapshot used by attachment-race tests. */
@@ -1092,6 +1093,8 @@ async function handlePreviewRequest(command: Record<string, unknown>): Promise<u
         ansi: `\u001b[1;36mExtension status\u001b[0m · rendered at ${cols} columns`,
       });
     }
+    case "render_tool":
+      return response("render_tool", { rendered: false });
     case "get_session_stats":
       return response("get_session_stats", {
         sessionId: DEMO_SESSION_ID,
@@ -1338,7 +1341,13 @@ function outcomeFor(
     case "reload":
       return { ...base, kind: "reload", result: {} };
     case "export":
-      return { ...base, kind: "export", result: { path: "/tmp/pi-vis-preview-export.html" } };
+      return {
+        ...base,
+        kind: "export",
+        result: intent.forShare
+          ? { shareUrl: "https://radius.pi.dev/artifact/preview" }
+          : { path: "/tmp/pi-vis-preview-export.html" },
+      };
     case "refreshModels":
       return { ...base, kind: "refreshModels", result: { refreshed: true } };
     case "loginProvider":
@@ -2041,6 +2050,9 @@ const stub = {
       }
       case "session.close":
         return { closed: true };
+      case "session.forceRestart":
+        previewHooks.forceRestartCalls++;
+        return { restarted: true };
       case "session.acknowledgeRestoration":
         return { acknowledged: true };
       case "session.acknowledgeNavigationPresentation":

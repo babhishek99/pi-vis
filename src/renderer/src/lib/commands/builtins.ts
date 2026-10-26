@@ -83,7 +83,12 @@ export const BUILTIN_COMMANDS: readonly BuiltinCommandDef[] = [
     description: "Change project trust for this workspace",
     takesArgs: false,
   },
-  { name: "share", argHint: "", description: "Share the session as a gist", takesArgs: false },
+  {
+    name: "share",
+    argHint: "",
+    description: "Share the session through Radius or a private gist",
+    takesArgs: false,
+  },
   {
     name: "changelog",
     argHint: "",

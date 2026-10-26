@@ -11,10 +11,9 @@ import { verifyResolvedPiBraceExpansion } from "./verify-pi-security-closure.mjs
 const scriptPath = fileURLToPath(import.meta.url);
 const projectRoot = path.resolve(path.dirname(scriptPath), "..");
 const require = createRequire(import.meta.url);
-const PINNED_PI_VERSION = "1.0.0";
+const PINNED_PI_VERSION = "1.4.0";
 const MINIMUM_SAFE_ELECTRON_VERSION = "43.5.0";
 export const PACKAGED_PI_PACKAGES = [
-  "chord",
   "pi-agent-core",
   "pi-ai",
   "pi-codemode",
@@ -23,7 +22,7 @@ export const PACKAGED_PI_PACKAGES = [
   "pi-telemetry",
   "pi-tui",
 ];
-export const REMOVED_PI_PACKAGES = ["pi-client", "pi-protocol"];
+export const REMOVED_PI_PACKAGES = ["chord", "pi-client", "pi-protocol", "pi-server"];
 
 export function packagedPaths(appBundle) {
   const resources = path.join(appBundle, "Contents", "Resources");

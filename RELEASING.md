@@ -98,16 +98,16 @@ is no supported test-skip path: a rerun must pass the same checks again.
 ### Mandatory pre-release checks
 
 The ordered `npm run release` check list begins with `npm ci`; the official
-Pi 1.0.0 tarball and its audited transitive closure must resolve from the exact
+Pi 1.4.0 tarball and its audited transitive closure must resolve from the exact
 root lock graph. Root `postinstall` serially provisions and verifies Electron,
-verifies that the unchanged published Pi shrinkwrap is superseded by the safe
-installed `brace-expansion@5.0.12` closure, and only then applies the
+verifies the pristine shrinkwrap-free package and safe installed
+`brace-expansion@5.0.12` plus patched Undici closure, and only then applies the
 independent, fail-closed node-pty compatibility patch; release installs must not
 suppress lifecycle scripts. The automated suite
 (`npm audit --omit=dev`, typecheck, `lint`, `test`, `test:render`, `test:e2e`,
 `npm ls --all`) then runs; its
 Electron lane includes the isolated,
-repository-pinned Pi 1.0.0 SDK-host compatibility journeys described in
+repository-pinned Pi 1.4.0 SDK-host compatibility journeys described in
 `docs/testing.md`. The subsequent `dist` step first runs
 `verify:mac-artifacts`: the custom signer signs only Mach-O/fat binaries and
 bundle containers, so unpacked fonts, images, WASM, ELF/PE binaries, and
@@ -117,9 +117,9 @@ installer extraction and before and after the DMG payload is copied off its
 mounted image. An unsigned local `dist` may skip this transfer gate, while
 `dist:signed` and `release` fail closed if the app is unsigned. The step then
 runs `verify:packaged-pty` against the completed app. It checks the exact
-eight-package Pi production closure
-(coding-agent, chord, agent-core, pi-ai, codemode, MCP, telemetry, and pi-tui),
-absence of retired client/protocol packages, the modular CLI anchor, exact
+seven-package Pi production closure
+(coding-agent, agent-core, pi-ai, codemode, MCP, telemetry, and pi-tui),
+absence of retired chord/client/protocol/server packages, the modular CLI anchor, exact
 version execution of the bundled CLI, a runnable codemode sandbox plus its
 worker/WASM assets, the exact-version private llama adapter's returned public
 shape, the packaged Pi/minimatch resolution of `brace-expansion@5.0.12`, the
@@ -130,7 +130,7 @@ removed agent-core subpaths/exports, audit the complete four-entry private
 registry, or exercise public tool-search/MCP composition inside the artifact;
 those are repository-tree gates in `tests/pinned-pi-runtime.test.mts`.
 
-The Pi 1.0 compatibility gates must also prove the public image-generation and
+The Pi 1.4 compatibility gates must also prove the public image-generation and
 codemode surfaces, Anthropic copy-code interaction, account/subscription
 labels, Radius consent plus locked atomic global configuration and same-owner
 reload, MCP authorization metadata/issuer/credential/scope hardening, and
@@ -145,7 +145,7 @@ public OAuth API. Fullscreen-by-default and
 `quietStartup: "header"` are explicitly standalone-CLI behavior: release
 review must confirm embedded Pi-Vis panels still use content-hugging
 `TuiMainScreen` and app-owned startup chrome. See
-`docs/compatibility/pi-1.0.0.md`; the historical 0.99.2 audit is not the current
+`docs/compatibility/pi-1.4.0.md`; the historical 0.99.2 audit is not the current
 acceptance contract.
 
 For a pinned-Pi release candidate, retain successful output for this clean
@@ -168,7 +168,7 @@ manually before publishing:
    newline (not a submit) in the unified editor; Enter submits; a multiline
    paste inserts lines without submitting; session-switch keeps Shift+Enter
    working. The gated spec defaults to the repository-local pinned Pi, rejects
-   any version other than 1.0.0 before launch, and requires provider auth
+   any version other than 1.4.0 before launch, and requires provider auth
    (real API spend). `PIVIS_TEST_PI_BIN` is an explicit alternate-path override,
    not a `PATH` search:
 

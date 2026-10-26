@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   CredentialSynchronizationError,
+  SettingsManager,
   resolveModelScopeWithDiagnostics,
 } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
@@ -125,7 +126,13 @@ function makeSession(overrides = {}) {
       getCwd: vi.fn(() => "/work"),
       appendCustomEntry: vi.fn(),
     },
-    settingsManager: { setEnabledModels: vi.fn(), getEnabledModels: vi.fn(() => undefined) },
+    settingsManager: {
+      setEnabledModels: vi.fn(),
+      getEnabledModels: vi.fn(() => undefined),
+      flush: vi.fn(async () => {}),
+      reload: vi.fn(async () => {}),
+      drainErrors: vi.fn(() => []),
+    },
     scopedModels: [],
     setScopedModels: vi.fn(),
     ...overrides,
@@ -391,7 +398,7 @@ describe("setupCommandBridge — wiring", () => {
     ]);
   });
 
-  it("clears reload command text in the successor editor baseline", async () => {
+  it("settles reload source consumption before publishing the successor baseline", async () => {
     const editor = {
       revision: 7,
       text: "/reload",
@@ -404,8 +411,10 @@ describe("setupCommandBridge — wiring", () => {
       return true;
     });
     const sendControl = vi.fn();
+    const sendFrame = vi.fn();
     const { session, dispatchIntent } = setup(undefined, {
       sendControl,
+      sendFrame,
       uiState: {
         catalogSnapshot: () => ({}),
         editorSnapshot: () => ({ ...editor, attachments: [...editor.attachments] }),
@@ -444,6 +453,38 @@ describe("setupCommandBridge — wiring", () => {
       revision: 8,
       text: "",
       attachments: [{ kind: "file", name: "notes.txt", path: "/tmp/notes.txt" }],
+    });
+    const outcomeFrameIndex = sendFrame.mock.calls.findIndex(([frame]) =>
+      frame.records.some((record) => record.type === "intent_outcome"),
+    );
+    expect(outcomeFrameIndex).toBeGreaterThanOrEqual(0);
+    expect(sendFrame.mock.calls[outcomeFrameIndex]?.[0]).toMatchObject({
+      owner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+      records: [
+        {
+          type: "intent_outcome",
+          outcome: {
+            intentId: "reload-editor-command",
+            owner: { hostInstanceId: "test-host", sessionEpoch: 0 },
+            kind: "reload",
+            state: "completed",
+            result: {
+              editorSourceConsumed: true,
+              successorIdentity: { hostInstanceId: "test-host", sessionEpoch: 1 },
+            },
+          },
+        },
+      ],
+    });
+    const batchIndex = sendControl.mock.calls.findIndex(
+      ([message]) => message.type === "transition_batch",
+    );
+    expect(sendFrame.mock.invocationCallOrder[outcomeFrameIndex]).toBeLessThan(
+      sendControl.mock.invocationCallOrder[batchIndex],
+    );
+    expect(sendFrame.mock.calls.at(-1)?.[0].owner).toEqual({
+      hostInstanceId: "test-host",
+      sessionEpoch: 1,
     });
   });
 
@@ -533,8 +574,10 @@ describe("setupCommandBridge — wiring", () => {
     const editor = { revision: 8, text: "/reload ", attachments: [] };
     const acceptEditorSubmission = vi.fn();
     const sendControl = vi.fn();
+    const sendFrame = vi.fn();
     const { session, dispatchIntent } = setup(undefined, {
       sendControl,
+      sendFrame,
       uiState: {
         catalogSnapshot: () => ({}),
         editorSnapshot: () => ({ ...editor }),
@@ -564,6 +607,20 @@ describe("setupCommandBridge — wiring", () => {
       .map(([message]) => message)
       .find((message) => message.type === "transition_batch")?.batch;
     expect(batch?.terminalSnapshot.editor).toMatchObject(editor);
+    expect(
+      sendFrame.mock.calls
+        .flatMap(([frame]) => frame.records)
+        .find((record) => record.type === "intent_outcome"),
+    ).toMatchObject({
+      outcome: {
+        kind: "reload",
+        state: "completed",
+        result: {
+          editorSourceConsumed: false,
+          successorIdentity: { hostInstanceId: "test-host", sessionEpoch: 1 },
+        },
+      },
+    });
   });
 
   it("routes extension replacement actions through transition fencing", async () => {
@@ -1666,6 +1723,9 @@ describe("setupCommandBridge — target intent dispatch", () => {
     session.prompt.mockImplementation(async (_text, options) =>
       options.preflightResult(options.expandPromptTemplates ? "handled" : "started"),
     );
+    session.reload.mockImplementation(async ({ beforeSessionStart }) => {
+      await beforeSessionStart();
+    });
     const intents = [
       ["interrupt", {}],
       [
@@ -1710,7 +1770,10 @@ describe("setupCommandBridge — target intent dispatch", () => {
         editor = { ...editor, revision: payload.editorRevision, text: payload.text };
       }
       await expect(
-        dispatchIntent(envelope(`intent-${kind}`, { kind, ...payload })),
+        dispatchIntent({
+          ...envelope(`intent-${kind}`, { kind, ...payload }),
+          expectedOwner: { hostInstanceId: "test-host", sessionEpoch: authority.sessionEpoch },
+        }),
       ).resolves.toEqual(
         expect.objectContaining({ status: "admitted", intentId: `intent-${kind}` }),
       );
@@ -1740,7 +1803,7 @@ describe("setupCommandBridge — target intent dispatch", () => {
     });
     expect(session.navigateTree).toHaveBeenCalledWith("leaf-9", { summarize: true });
     expect(session.setModel).toHaveBeenCalled();
-    expect(session.setThinkingLevel).toHaveBeenCalledWith("high", { persist: false });
+    expect(session.setThinkingLevel).toHaveBeenCalledWith("high", { persist: true });
     expect(session.setSessionName).toHaveBeenCalledWith("Renamed");
     expect(session.reload).toHaveBeenCalledOnce();
     // Both text intents use the child public prompt/extension path; no
@@ -3243,24 +3306,32 @@ describe("setupCommandBridge — target intent dispatch", () => {
     expect(session.prompt).not.toHaveBeenCalled();
   });
 
-  it("keeps model/thinking changes session-only unless the typed intent persists them", async () => {
+  it("persists ordinary model/thinking selections unless the intent explicitly opts out", async () => {
     const model = { provider: "anthropic", id: "claude-x", name: "Claude X" };
-    const { session, dispatchIntent } = setup({
+    const { session, send, dispatchIntent } = setup({
       modelRuntime: { getAvailable: vi.fn(async () => [model]) },
     });
 
     for (const [id, intent] of [
-      ["session-model", { kind: "setModel", provider: "anthropic", modelId: "claude-x" }],
       [
-        "default-model",
-        { kind: "setModel", provider: "anthropic", modelId: "claude-x", persist: true },
+        "session-model",
+        { kind: "setModel", provider: "anthropic", modelId: "claude-x", persist: false },
       ],
-      ["session-thinking", { kind: "setThinking", level: "high" }],
-      ["default-thinking", { kind: "setThinking", level: "max", persist: true }],
+      ["default-model", { kind: "setModel", provider: "anthropic", modelId: "claude-x" }],
+      ["session-thinking", { kind: "setThinking", level: "high", persist: false }],
+      ["default-thinking", { kind: "setThinking", level: "max" }],
     ]) {
       await expect(dispatchIntent(envelope(id, intent))).resolves.toMatchObject({
         status: "admitted",
       });
+      await vi.waitFor(() =>
+        expect(send).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "intent_outcome",
+            outcome: expect.objectContaining({ intentId: id, state: "completed" }),
+          }),
+        ),
+      );
     }
     await vi.waitFor(() => expect(session.setThinkingLevel).toHaveBeenCalledTimes(2));
 
@@ -3268,6 +3339,95 @@ describe("setupCommandBridge — target intent dispatch", () => {
     expect(session.setModel).toHaveBeenNthCalledWith(2, model, { persist: true });
     expect(session.setThinkingLevel).toHaveBeenNthCalledWith(1, "high", { persist: false });
     expect(session.setThinkingLevel).toHaveBeenNthCalledWith(2, "max", { persist: true });
+    expect(session.settingsManager.flush).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { kind: "setModel", provider: "anthropic", modelId: "claude-x" },
+    { kind: "setThinking", level: "high" },
+  ])("waits for persisted $kind defaults before reporting completion", async (intent) => {
+    const write = deferred();
+    const { session, send, dispatchIntent } = setup();
+    session.settingsManager.flush.mockReturnValueOnce(write.promise);
+
+    await dispatchIntent(envelope("selection-persistence", intent));
+    await vi.waitFor(() => expect(session.settingsManager.flush).toHaveBeenCalledOnce());
+    expect(send.mock.calls.some(([record]) => record.type === "intent_outcome")).toBe(false);
+    write.resolve();
+    await vi.waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: expect.objectContaining({
+            intentId: "selection-persistence",
+            state: "completed",
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("reports a sanitized failed outcome when Pi cannot persist selection defaults", async () => {
+    const { session, send, dispatchIntent } = setup();
+    session.settingsManager.drainErrors
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([{ scope: "global", error: new Error("secret settings detail") }]);
+    await dispatchIntent(
+      envelope("selection-write-failed", { kind: "setThinking", level: "high" }),
+    );
+    await vi.waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: expect.objectContaining({
+            intentId: "selection-write-failed",
+            state: "failed",
+            error: "Selection changed for this session, but saving new-session defaults failed.",
+          }),
+        }),
+      ),
+    );
+    expect(JSON.stringify(send.mock.calls)).not.toContain("secret settings detail");
+  });
+
+  it("keeps repeated saves failed for malformed Pi settings and allows retry after repair", async () => {
+    let stored = "{ invalid";
+    const settingsManager = SettingsManager.fromStorage({
+      withLock: (scope, update) => {
+        const next = update(scope === "global" ? stored : undefined);
+        if (scope === "global" && next !== undefined) stored = next;
+      },
+    });
+    const { session, send, dispatchIntent } = setup({ settingsManager });
+    session.setThinkingLevel.mockImplementation((level, { persist }) => {
+      if (persist) settingsManager.setDefaultThinkingLevel(level);
+    });
+    for (const [index, level] of ["high", "medium"].entries()) {
+      const intentId = `malformed-default-${index}`;
+      await dispatchIntent(envelope(intentId, { kind: "setThinking", level }));
+      await vi.waitFor(() =>
+        expect(send).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "intent_outcome",
+            outcome: expect.objectContaining({ intentId, state: "failed" }),
+          }),
+        ),
+      );
+      expect(stored).toBe("{ invalid");
+    }
+    expect(session.setThinkingLevel).not.toHaveBeenCalled();
+    stored = "{}";
+    await dispatchIntent(envelope("repaired-default", { kind: "setThinking", level: "low" }));
+    await vi.waitFor(() =>
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "intent_outcome",
+          outcome: expect.objectContaining({ intentId: "repaired-default", state: "completed" }),
+        }),
+      ),
+    );
+    expect(JSON.parse(stored).defaultThinkingLevel).toBe("low");
   });
 
   it("round-trips model-scope patterns containing whitespace and commas", async () => {
@@ -3346,6 +3506,68 @@ describe("setupCommandBridge — target intent dispatch", () => {
     expect(runWithInvocationSurface).toHaveBeenNthCalledWith(2, "unified", expect.any(Function));
     expect(session.prompt).not.toHaveBeenCalled();
   });
+
+  it.each([false, true])(
+    "shares through Radius once and routes real Escape to fetch cancellation (%s)",
+    async (cancel) => {
+      const fetchStarted = deferred();
+      const fetchResult = deferred();
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, options) => {
+        fetchStarted.resolve();
+        if (!cancel)
+          return new Response(
+            JSON.stringify({
+              artifact: { canonical_url: "https://radius.pi.dev/artifact/bridge" },
+            }),
+          );
+        options.signal.addEventListener("abort", () => fetchResult.reject(options.signal.reason), {
+          once: true,
+        });
+        return fetchResult.promise;
+      });
+      try {
+        const initial = makeSession();
+        initial.settingsManager.getSessionShareDestination = () => "radius";
+        initial.modelRuntime.getProvider.mockReturnValue({ id: "radius" });
+        initial.modelRuntime.getAuth = vi.fn(async () => ({
+          auth: { apiKey: "fixture-share-secret" },
+        }));
+        initial.state = { systemPrompt: "fixture policy", tools: [] };
+        initial.sessionManager.getSessionId = () => "share-session";
+        const { session, dispatchIntent, handleEscape, send } = setup(initial, {
+          pi: { ...MODEL_SCOPE_PI, CURRENT_SESSION_VERSION: 3 },
+        });
+        const request = envelope(`radius-share-${cancel}`, { kind: "export", forShare: true });
+        await expect(dispatchIntent(request)).resolves.toMatchObject({ status: "admitted" });
+        await fetchStarted.promise;
+        if (cancel)
+          await expect(handleEscape("cancel-radius-share")).resolves.toMatchObject({
+            disposition: "abort_requested",
+            target: "command",
+          });
+        await vi.waitFor(() =>
+          expect(send).toHaveBeenCalledWith(
+            expect.objectContaining({
+              type: "intent_outcome",
+              outcome: expect.objectContaining({
+                intentId: request.intentId,
+                state: cancel ? "cancelled" : "completed",
+                result: cancel
+                  ? { cancelled: true }
+                  : { shareUrl: "https://radius.pi.dev/artifact/bridge" },
+              }),
+            }),
+          ),
+        );
+        await dispatchIntent(request);
+        expect(fetchSpy).toHaveBeenCalledOnce();
+        expect(session.exportToHtml).not.toHaveBeenCalled();
+        expect(JSON.stringify(send.mock.calls)).not.toContain("fixture-share-secret");
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    },
+  );
 
   it("derives default export names from the canonical presented session file", async () => {
     const runtimePin = "/sessions/.pivis-session-42-runtime.runtime-pin";
@@ -3976,6 +4198,49 @@ describe("setupCommandBridge — command mapping", () => {
     );
     expect(render).toHaveBeenCalledWith(96);
     expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders canonical tool calls and results through the public renderer resolver", async () => {
+    const { session, run } = setup({
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "render-call",
+              name: "read",
+              arguments: { path: "canonical.txt" },
+            },
+          ],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "render-call",
+          toolName: "read",
+          content: [{ type: "text", text: "canonical output" }],
+          details: {},
+          isError: false,
+        },
+      ],
+    });
+    session.getToolDefinition = vi.fn(() => ({
+      renderCall: (args) => ({ render: () => [`call ${args.path}`] }),
+    }));
+    session.extensionRunner.resolveToolRenderers = vi.fn((_name, next) => ({
+      ...next(),
+      renderResult: (result) => ({ render: () => [result.content[0].text] }),
+    }));
+    await expect(
+      run({ type: "render_tool", toolCallId: "render-call", cols: 80, expanded: true }),
+    ).resolves.toMatchObject({
+      success: true,
+      data: { rendered: true, ansi: "call canonical.txt\ncanonical output" },
+    });
+    expect(session.extensionRunner.resolveToolRenderers).toHaveBeenCalledWith(
+      "read",
+      expect.any(Function),
+    );
   });
 
   it("hides custom entries when no registered renderer exists", async () => {

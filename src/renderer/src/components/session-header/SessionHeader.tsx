@@ -46,8 +46,13 @@ type PendingIntent<T> = { intentId: string; value: T };
 
 function authorityObservationFor(
   projection: SessionViewState["authorityProjection"],
+  availability: SessionViewState["availability"] | undefined,
 ): AuthorityObservation | undefined {
-  if (projection?.semantic.state !== "following" || !projection.authoritativeSnapshot) {
+  if (
+    availability !== "available" ||
+    projection?.semantic.state !== "following" ||
+    !projection.authoritativeSnapshot
+  ) {
     return undefined;
   }
   return { owner: projection.authoritativeSnapshot.owner, cursor: projection.semantic.cursor };
@@ -69,7 +74,7 @@ function sameObservation(a: AuthorityObservation, b: AuthorityObservation | unde
 function observationForSession(
   session: SessionViewState | undefined,
 ): AuthorityObservation | undefined {
-  return authorityObservationFor(session?.authorityProjection);
+  return authorityObservationFor(session?.authorityProjection, session?.availability);
 }
 
 function observationOwnerIsCurrent(
@@ -146,8 +151,8 @@ export function SessionHeader({ sessionId }: SessionHeaderProps): React.ReactEle
   // semantic plane is synchronizing and must not drive a mutation.
   const authorityProjection = session?.authorityProjection;
   const observation = useMemo(
-    () => authorityObservationFor(authorityProjection),
-    [authorityProjection],
+    () => authorityObservationFor(authorityProjection, session?.availability),
+    [authorityProjection, session?.availability],
   );
   const live = session?.status === "ready" && observation !== undefined;
   // Read-only catalog/stat responses are owner-fenced but are not canonical

@@ -64,6 +64,7 @@ describe("loadHistory (real pi v3 nested message format)", () => {
           toolCallId: "call_1",
           toolName: "read",
           isError: false,
+          durationMs: 42.25,
           content: [{ type: "text", text: "file contents" }],
           details: {
             diff: "-old\n+new",
@@ -114,6 +115,7 @@ describe("loadHistory (real pi v3 nested message format)", () => {
       patch: "--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new",
       fullOutputPath: "/tmp/full-output.log",
     });
+    expect(toolData["durationMs"]).toBe(42.25);
     expect(toolData["isError"]).toBe(false);
     expect(toolData["isStreaming"]).toBe(false);
 

@@ -20,7 +20,7 @@ export const ToolCallBlockSchema = z.object({
   type: z.literal("tool_call"),
   toolCallId: z.string(),
   toolName: z.string(),
-  input: z.record(z.unknown()).optional(),
+  input: z.record(z.string(), z.unknown()).optional(),
   output: z.unknown().optional(),
   diff: z.string().optional(),
   patch: z.string().optional(),

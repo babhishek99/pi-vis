@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 type PreviewHooks = {
   abortCalls: number;
+  forceRestartCalls: number;
   startStreaming(): void;
 };
 
@@ -52,6 +53,37 @@ test.describe("sidebar session archive confirmation", () => {
     await page.goto("/");
     await expect(page.locator(".composer__textarea")).toBeEnabled({ timeout: 20_000 });
     await seedStoredSession(page);
+  });
+
+  test("hard restart confirms during running work and preserves the session row", async ({
+    page,
+  }) => {
+    const counts = await page.evaluate(() => {
+      const hooks = (window as unknown as { __pivisPreview: PreviewHooks }).__pivisPreview;
+      hooks.startStreaming();
+      return { aborts: hooks.abortCalls, restarts: hooks.forceRestartCalls };
+    });
+    const row = page.locator(".sidebar__session").filter({ hasText: "Untitled session" });
+    await row.hover();
+    const restart = row.getByTitle("Force restart host");
+    await restart.click();
+    const dialog = page.getByRole("dialog", { name: "Force restart host?" });
+    await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(restart).toBeFocused();
+    await restart.click();
+    await dialog.getByRole("button", { name: "Force restart", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(row).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const hooks = (window as unknown as { __pivisPreview: PreviewHooks }).__pivisPreview;
+          return { aborts: hooks.abortCalls, restarts: hooks.forceRestartCalls };
+        }),
+      )
+      .toEqual({ aborts: counts.aborts, restarts: counts.restarts + 1 });
   });
 
   test("defaults to the safe action, restores focus on cancel, and archives only on confirm", async ({

@@ -272,6 +272,10 @@ test.describe("real Pi races", () => {
           expect: { promptIncludes: "reload race seed", compaction: false },
           response: { type: "text", chunks: ["RELOAD-RACE-SEED"] },
         },
+        {
+          expect: { promptIncludes: "after repeated reload", compaction: false },
+          response: { type: "text", chunks: ["RELOAD-RACE-CONTINUED"] },
+        },
       ],
       { latency: REAL_SDK_PROVIDER_LATENCY },
     );
@@ -307,6 +311,12 @@ test.describe("real Pi races", () => {
       await focusStorm(launch.window, textarea);
       await attaching.catch(() => undefined);
       const recovered = await readyAttach(launch.window, sessionId, generation);
+      await expect(textarea).toHaveValue("");
+      await expect(
+        launch.window.getByText("Reloaded settings, extensions, skills, prompts, and themes.", {
+          exact: true,
+        }),
+      ).toBeVisible();
       expect(recovered.baseline!.owner.hostInstanceId).toBe(
         predecessor.baseline!.owner.hostInstanceId,
       );
@@ -317,7 +327,18 @@ test.describe("real Pi races", () => {
         (entry) => entry.channel === "session.authorityAttach",
       ).length;
       expect(after - before).toBeLessThanOrEqual(8);
-      expect(provider.requests).toHaveLength(1);
+      // A reload must also retire its command custody: the next reload and a
+      // following ordinary prompt must dispatch once without a stuck source.
+      await expect(launch.window.locator(".session-header__model-btn")).toBeEnabled();
+      await slash(textarea, "/reload");
+      await expect(launch.window.locator(".session-header__model-btn")).toBeEnabled();
+      await textarea.fill("after repeated reload");
+      await textarea.press("Enter");
+      await expect(launch.window.getByText("RELOAD-RACE-CONTINUED", { exact: true })).toBeVisible({
+        timeout: 60_000,
+      });
+      await expect(textarea).toHaveValue("");
+      expect(provider.requests).toHaveLength(2);
       provider.assertExhausted();
       assertValidSessionJsonl(fixture.sessionFiles());
     } finally {

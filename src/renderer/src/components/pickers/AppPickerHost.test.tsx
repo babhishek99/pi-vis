@@ -113,6 +113,7 @@ function installRuntime(): void {
     sessions.set(SESSION_ID, {
       ...session,
       status: "ready",
+      availability: "available",
       hostInstanceId: OWNER.hostInstanceId,
       sessionEpoch: OWNER.sessionEpoch,
       authorityProjection,
@@ -325,7 +326,7 @@ describe("AppPickerHost pinned-Pi model/thinking defaults", () => {
     vi.unstubAllGlobals();
   });
 
-  it("uses Ctrl+S to persist the highlighted model through a typed intent", async () => {
+  it("selects the highlighted model with Enter using the default-persisting intent", async () => {
     installRuntime();
     installModelThinkingState();
     useSessionsStore.getState().openPicker(SESSION_ID, { kind: "model" });
@@ -338,8 +339,7 @@ describe("AppPickerHost pinned-Pi model/thinking defaults", () => {
     await act(async () => {
       input!.dispatchEvent(
         new KeyboardEvent("keydown", {
-          key: "s",
-          ctrlKey: true,
+          key: "Enter",
           bubbles: true,
           cancelable: true,
         }),
@@ -351,7 +351,6 @@ describe("AppPickerHost pinned-Pi model/thinking defaults", () => {
       kind: "setModel",
       provider: "openai",
       modelId: "gpt-6-astra",
-      persist: true,
     });
     expect(useSessionsStore.getState().sessions.get(SESSION_ID)?.pendingPicker).toBeUndefined();
     view.unmount();
@@ -375,8 +374,7 @@ describe("AppPickerHost pinned-Pi model/thinking defaults", () => {
       const save = () =>
         input!.dispatchEvent(
           new KeyboardEvent("keydown", {
-            key: "s",
-            ctrlKey: true,
+            key: "Enter",
             bubbles: true,
             cancelable: true,
           }),
@@ -395,7 +393,7 @@ describe("AppPickerHost pinned-Pi model/thinking defaults", () => {
     view.unmount();
   });
 
-  it("applies an exact /thinking argument session-only without showing a picker", async () => {
+  it("applies an exact /thinking argument using the default-persisting intent without a picker", async () => {
     installRuntime();
     installModelThinkingState();
     useSessionsStore.getState().openPicker(SESSION_ID, { kind: "thinking", search: "HIGH" });
@@ -429,8 +427,7 @@ describe("AppPickerHost pinned-Pi model/thinking defaults", () => {
     await act(async () => {
       input!.dispatchEvent(
         new KeyboardEvent("keydown", {
-          key: "s",
-          ctrlKey: true,
+          key: "Enter",
           bubbles: true,
           cancelable: true,
         }),
@@ -470,7 +467,7 @@ describe("AppPickerHost pinned-Pi model/thinking defaults", () => {
     view.unmount();
   });
 
-  it("uses Ctrl+S to persist the highlighted thinking level", async () => {
+  it("selects the highlighted thinking level with Enter using the default-persisting intent", async () => {
     installRuntime();
     installModelThinkingState();
     useSessionsStore.getState().openPicker(SESSION_ID, { kind: "thinking" });
@@ -483,8 +480,7 @@ describe("AppPickerHost pinned-Pi model/thinking defaults", () => {
     await act(async () => {
       input!.dispatchEvent(
         new KeyboardEvent("keydown", {
-          key: "s",
-          ctrlKey: true,
+          key: "Enter",
           bubbles: true,
           cancelable: true,
         }),
@@ -495,7 +491,6 @@ describe("AppPickerHost pinned-Pi model/thinking defaults", () => {
     expect(intents.map((envelope) => envelope.intent)).toContainEqual({
       kind: "setThinking",
       level: "medium",
-      persist: true,
     });
     expect(useSessionsStore.getState().sessions.get(SESSION_ID)?.pendingPicker).toBeUndefined();
     view.unmount();
@@ -675,6 +670,52 @@ describe("AppPickerHost once-only picker activation", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
+
+  it.each(["fork", "logout"] as const)(
+    "fences cached %s actions while the same owner is transitioning",
+    async (kind) => {
+      installRuntime();
+      useSessionsStore.getState().openPicker(
+        SESSION_ID,
+        kind === "fork"
+          ? {
+              kind,
+              messages: [{ entryId: "entry-1", text: "Choose me" }],
+            }
+          : {
+              kind,
+              providers: [{ id: "anthropic", name: "Anthropic", authType: "oauth" }],
+            },
+      );
+      const intents: IntentEnvelope[] = [];
+      installPickerBrowser(intents);
+      const view = mount(<AppPickerHost sessionId={SESSION_ID} />);
+      const row = view.container.querySelector<HTMLButtonElement>(".picker__item");
+      expect(row).toBeTruthy();
+      act(() =>
+        useSessionsStore.setState((state) => {
+          const sessions = new Map(state.sessions);
+          sessions.set(SESSION_ID, { ...sessions.get(SESSION_ID)!, availability: "transitioning" });
+          return { sessions };
+        }),
+      );
+      // A retained semantic cursor exists solely to consume the predecessor's
+      // terminal frame. Neither cached pointer nor keyboard selection can use it.
+      expect(
+        useSessionsStore.getState().sessions.get(SESSION_ID)?.authorityProjection?.semantic.state,
+      ).toBe("following");
+      await act(async () => {
+        row!.click();
+        row!.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+        );
+        await Promise.resolve();
+      });
+      expect(intents).toEqual([]);
+      expect(useSessionsStore.getState().sessions.get(SESSION_ID)?.pendingPicker?.kind).toBe(kind);
+      view.unmount();
+    },
+  );
 
   it("dispatches one typed fork continuation when Enter and click race", async () => {
     installRuntime();

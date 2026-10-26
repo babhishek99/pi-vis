@@ -45,6 +45,13 @@ describe("parseAnsi", () => {
     expect(stripAnsi("\x1b]0;title\x07text")).toBe("text");
   });
 
+  it("strips Pi 1.2 APC cursor markers while preserving visible text and SGR styles", () => {
+    const input = "\x1b[32mleft\x1b_pi:c\x07\x1b_pi:fc\x07x\x1b_pi:/fc\x07right\x1b[0m";
+    expect(stripAnsi(input)).toBe("leftxright");
+    expect(parseAnsi(input).every((span) => span.style.color === "var(--success)")).toBe(true);
+    expect(stripAnsi("before\x1b_pi:fc\x1b\\x\x1b_pi:/fc\x1b\\after")).toBe("beforexafter");
+  });
+
   it("keeps dim/italic and clears them on 22/23", () => {
     const spans = parseAnsi("\x1b[2;3mfaint\x1b[22;23mnormal");
     expect(spans[0]).toEqual({ text: "faint", style: { opacity: 0.6, fontStyle: "italic" } });

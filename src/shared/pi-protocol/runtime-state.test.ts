@@ -591,6 +591,22 @@ describe("authority protocol schemas", () => {
     expect(SessionQuerySchema.safeParse(query).success).toBe(true);
     expect(
       SessionQuerySchema.safeParse({
+        type: "render_tool",
+        toolCallId: "call-a",
+        cols: 80,
+        expanded: true,
+      }).success,
+    ).toBe(true);
+    expect(
+      SessionQuerySchema.safeParse({
+        type: "render_tool",
+        toolCallId: "call-a",
+        cols: 80,
+        args: { untrusted: "renderer payload must not enter extension renderers" },
+      }).success,
+    ).toBe(false);
+    expect(
+      SessionQuerySchema.safeParse({
         type: "render_message",
         customType: "status-card",
         timestamp: 1_700_000_000_000,
@@ -651,6 +667,7 @@ describe("authority protocol schemas", () => {
       "get_trust_state",
       "render_entry",
       "render_message",
+      "render_tool",
       "transform_markdown",
     ]);
 
@@ -1138,5 +1155,34 @@ describe("authority protocol schemas", () => {
         reason: "cancelled",
       }),
     ).toMatchObject({ status: "not_admitted", reason: "cancelled" });
+  });
+});
+
+describe("share export result contract", () => {
+  it("accepts only one bounded destination or explicit cancellation", () => {
+    const base = {
+      intentId: "share-result",
+      owner: { hostInstanceId: "11111111-1111-4111-8111-111111111111", sessionEpoch: 0 },
+      kind: "export",
+      state: "completed",
+    };
+    for (const result of [
+      { path: "/tmp/share.html" },
+      { shareUrl: "https://radius.pi.dev/artifact/one" },
+      { cancelled: true },
+    ]) {
+      expect(IntentOutcomeSchema.safeParse({ ...base, result }).success).toBe(true);
+    }
+    for (const result of [
+      {},
+      { path: "/tmp/share.html", shareUrl: "https://radius.pi.dev/artifact/one" },
+      { shareUrl: "javascript:alert(1)" },
+      { shareUrl: "https://user:password@fixture.invalid" },
+      { shareUrl: `https://fixture.invalid/${"x".repeat(4096)}` },
+    ]) {
+      expect(IntentOutcomeSchema.safeParse({ ...base, result }).success).toBe(false);
+    }
+    expect(SessionIntentSchema.safeParse({ kind: "export", forShare: true }).success).toBe(true);
+    expect(SessionIntentSchema.safeParse({ kind: "export", forShare: "yes" }).success).toBe(false);
   });
 });

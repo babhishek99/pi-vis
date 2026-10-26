@@ -33,6 +33,7 @@ export class OwnerBoundShareEffects {
   constructor(
     private createGist: (
       exportedPath: string,
+      isCurrentOwner: () => boolean,
     ) => Promise<ShareResult | ShareError> = createGistForExport,
   ) {}
 
@@ -57,7 +58,7 @@ export class OwnerBoundShareEffects {
         });
       return existing.result;
     }
-    const result = this.createGist(exportedPath);
+    const result = this.createGist(exportedPath, isCurrentOwner);
     this.effects.set(key, { exportedPath, result });
     return result;
   }
@@ -68,8 +69,17 @@ export class OwnerBoundShareEffects {
  * the exported path in the child authority frame; this function never routes
  * a command to Pi or infers an export result.
  */
-export async function createGistForExport(exportedPath: string): Promise<ShareResult | ShareError> {
+export async function createGistForExport(
+  exportedPath: string,
+  isCurrentOwner: () => boolean = () => true,
+): Promise<ShareResult | ShareError> {
+  const staleOwner = (): ShareError => ({
+    ok: false,
+    error: "Session changed before share creation",
+  });
+  if (!isCurrentOwner()) return staleOwner();
   const env = await getSubprocessEnv();
+  if (!isCurrentOwner()) return staleOwner();
   try {
     const authResult = spawnSync("gh", ["auth", "status"], { encoding: "utf-8", env });
     const errCode = (authResult.error as NodeJS.ErrnoException | undefined)?.code;
@@ -79,9 +89,14 @@ export async function createGistForExport(exportedPath: string): Promise<ShareRe
   } catch {
     return { ok: false, error: GH_NOT_INSTALLED_MESSAGE };
   }
+  if (!isCurrentOwner()) return staleOwner();
 
   const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>(
     (resolve) => {
+      if (!isCurrentOwner()) {
+        resolve({ stdout: "", stderr: "Session changed before share creation", code: null });
+        return;
+      }
       let stdout = "";
       let stderr = "";
       const proc = spawn("gh", ["gist", "create", "--public=false", exportedPath], { env });

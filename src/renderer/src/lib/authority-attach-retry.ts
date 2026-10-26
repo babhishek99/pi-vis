@@ -43,7 +43,7 @@ export function authorityNeedsBaseline(projection: RendererAuthorityState | unde
   );
 }
 
-/** Bounded, single-flight authority attach with cancellation on session removal. */
+/** Bounded, single-flight authority attach with cancellation at lifecycle fences. */
 export class AuthorityAttachRetry {
   private readonly inFlight = new Map<SessionId, InFlightAttach>();
   private readonly cycles = new Map<SessionId, AttachCycle>();
@@ -82,18 +82,29 @@ export class AuthorityAttachRetry {
 
     const cycle = this.cycle(sessionId);
     const attach: InFlightAttach = { cancelled: false, promise: Promise.resolve() };
-    const active = (): boolean => !attach.cancelled && this.options.sessionExists(sessionId);
+    const active = (): boolean =>
+      !attach.cancelled &&
+      this.inFlight.get(sessionId) === attach &&
+      this.options.sessionExists(sessionId);
+    const cancelAttempt = (): void => {
+      // A lifecycle fence may already have replaced this flight. Its delayed
+      // IPC continuation must never cancel the successor's fresh attach.
+      const current = this.inFlight.get(sessionId);
+      if (current === attach || (!current && this.cycles.get(sessionId) === cycle)) {
+        this.cancel(sessionId);
+      }
+    };
     const completeAttachCycle = (): void => {
       // Resolve callers only after retiring this attempt. A continuation may
       // immediately request a second cycle (for example, fileChanged still
       // observing the predecessor owner); leaving the completed attempt in
       // `inFlight` would make that new cycle join work that can no longer run.
       if (this.inFlight.get(sessionId) === attach) this.inFlight.delete(sessionId);
-      this.completeCycle(sessionId);
+      if (this.cycles.get(sessionId) === cycle) this.completeCycle(sessionId);
     };
     const scheduleRetry = (): void => {
       if (!active()) {
-        this.cancel(sessionId);
+        cancelAttempt();
         return;
       }
       const attempt = this.retries.get(sessionId) ?? 0;
@@ -120,7 +131,7 @@ export class AuthorityAttachRetry {
       const timer = setTimeout(() => {
         this.timers.delete(sessionId);
         if (!this.options.sessionExists(sessionId)) {
-          this.cancel(sessionId);
+          cancelAttempt();
           return;
         }
         const retryForce = this.retryForces.get(sessionId) ?? false;
@@ -129,6 +140,7 @@ export class AuthorityAttachRetry {
       this.timers.set(sessionId, timer);
     };
 
+    this.inFlight.set(sessionId, attach);
     attach.promise = (async () => {
       try {
         const rendererResult = await this.options.rendererAttach(sessionId);
@@ -137,7 +149,7 @@ export class AuthorityAttachRetry {
         // reports a close/attach race as typed unavailability, never an IPC
         // exception that Electron logs as a failed handler.
         if (!active()) {
-          this.cancel(sessionId);
+          cancelAttempt();
           return;
         }
         if (rendererResult.status === "unavailable") {
@@ -146,7 +158,7 @@ export class AuthorityAttachRetry {
         }
         const response = await this.options.authorityAttach(sessionId);
         if (!active()) {
-          this.cancel(sessionId);
+          cancelAttempt();
           return;
         }
         if (response.status === "ready") {
@@ -161,10 +173,9 @@ export class AuthorityAttachRetry {
         // through the same bounded single-flight path without surfacing raw
         // Electron handler text to the user.
         if (active()) scheduleRetry();
-        else this.cancel(sessionId);
+        else cancelAttempt();
       }
     })();
-    this.inFlight.set(sessionId, attach);
     void attach.promise.finally(() => {
       if (this.inFlight.get(sessionId) === attach) this.inFlight.delete(sessionId);
     });

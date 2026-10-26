@@ -508,6 +508,73 @@ describe("Composer intent execution — model, name, and replacement commands", 
     );
   });
 
+  it("uses an authoritative Radius URL without invoking the gist effect", async () => {
+    const invoke = vi.fn();
+    const { deps, dispatch } = depsFor({
+      invoke: invoke as unknown as ExecuteDeps["invoke"],
+      awaitIntentOutcome: vi.fn(async (_sid, intentId) =>
+        authoritativeOutcome(intentId, "export", "completed", {
+          result: { shareUrl: "https://radius.pi.dev/artifact/fixture" },
+        }),
+      ),
+    });
+    await executeAction(SID, { kind: "share" }, deps);
+    expect(dispatch).toHaveBeenCalledWith(
+      SID,
+      { kind: "export", forShare: true },
+      expect.any(String),
+    );
+    expect(invoke).not.toHaveBeenCalled();
+    expect(deps.copyToClipboard).toHaveBeenCalledWith("https://radius.pi.dev/artifact/fixture");
+    expect(deps.addToast).toHaveBeenCalledWith(
+      SID,
+      "Share URL: https://radius.pi.dev/artifact/fixture",
+      "success",
+    );
+  });
+
+  it("quietly retires cancelled and stale-owner shares", async () => {
+    for (const cancelled of [true, false]) {
+      let current = OWNER;
+      const invoke = vi.fn();
+      const { deps } = depsFor({
+        invoke: invoke as unknown as ExecuteDeps["invoke"],
+        getIntentObservation: () => ({ owner: current, editorRevision: 2, userMessageSequence: 7 }),
+        awaitIntentOutcome: vi.fn(async (_sid, intentId) => {
+          if (!cancelled) current = { ...OWNER, sessionEpoch: OWNER.sessionEpoch + 1 };
+          return authoritativeOutcome(intentId, "export", "completed", {
+            result: cancelled
+              ? { cancelled: true }
+              : { shareUrl: "https://radius.pi.dev/artifact/fixture" },
+          });
+        }),
+      });
+      await executeAction(SID, { kind: "share" }, deps);
+      expect(invoke).not.toHaveBeenCalled();
+      expect(deps.copyToClipboard).not.toHaveBeenCalled();
+      expect(deps.addToast).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not show a stale Radius success after clipboard completion races replacement", async () => {
+    let current = OWNER;
+    const copyToClipboard = vi.fn(async () => {
+      current = { ...OWNER, sessionEpoch: OWNER.sessionEpoch + 1 };
+    });
+    const { deps } = depsFor({
+      copyToClipboard,
+      getIntentObservation: () => ({ owner: current, editorRevision: 2, userMessageSequence: 7 }),
+      awaitIntentOutcome: vi.fn(async (_sid, intentId) =>
+        authoritativeOutcome(intentId, "export", "completed", {
+          result: { shareUrl: "https://radius.pi.dev/artifact/fixture" },
+        }),
+      ),
+    });
+    await executeAction(SID, { kind: "share" }, deps);
+    expect(copyToClipboard).toHaveBeenCalledOnce();
+    expect(deps.addToast).not.toHaveBeenCalled();
+  });
+
   it("waits for the authoritative export path before invoking main-only sharing", async () => {
     const invoke = vi.fn(async () => ({
       ok: true,
@@ -519,7 +586,11 @@ describe("Composer intent execution — model, name, and replacement commands", 
     });
     await executeAction(SID, { kind: "share" }, deps);
     const [, , intentId] = dispatch.mock.calls[0]!;
-    expect(dispatch).toHaveBeenCalledWith(SID, { kind: "export" }, expect.any(String));
+    expect(dispatch).toHaveBeenCalledWith(
+      SID,
+      { kind: "export", forShare: true },
+      expect.any(String),
+    );
     expect(invoke).toHaveBeenCalledWith("session.share", {
       sessionId: SID,
       expectedHostInstanceId: OWNER.hostInstanceId,

@@ -1653,17 +1653,20 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
       if (isRealPrompt && pendingDiffComments.length > 0) {
         effectivePromptText = prependCodeCommentsToPrompt(effectivePromptText, pendingDiffComments);
       }
-      // Drop only an exact duplicate effective payload. Same text with
-      // different files/images remains a distinct intent and reaches host
-      // custody with its own explicit disposition.
+      // Drop duplicate Enter for the same editor generation. A cleared and
+      // retyped command is new custody even when an older identical command's
+      // terminal outcome arrived before its delayed admission receipt.
       const submissionInFlightKey = JSON.stringify({
         parsedAction,
         effectivePromptText,
         effectiveImages,
+        textGeneration: localTextEditGenerationRef.current,
       });
       if (submissionsInFlightRef.current.has(submissionInFlightKey)) return;
       submissionsInFlightRef.current.add(submissionInFlightKey);
       let dispatchSemanticSnapshot = semanticSnapshot;
+      let observedReloadOutcome: IntentOutcome | undefined;
+      let stopObservingReloadOutcome: (() => void) | undefined;
 
       // Freeze the exact candidate before a worktree replacement can fence the
       // old owner. Failure paths below preserve the text and release the UI in
@@ -2104,7 +2107,9 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
           owner: RuntimeIdentity,
         ): Promise<IntentOutcome> => {
           const findOutcome = (): IntentOutcome | undefined => {
+            if (observedReloadOutcome?.intentId === intentId) return observedReloadOutcome;
             const projection = useSessionsStore.getState().sessions.get(sid)?.authorityProjection;
+            if (projection?.semantic.state !== "following") return undefined;
             return projection?.authoritativeSnapshot?.recentIntentOutcomes.find(
               (outcome) =>
                 outcome.intentId === intentId &&
@@ -2125,6 +2130,17 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
               const runtime = useSessionsStore.getState().sessions.get(sid);
               const projection = runtime?.authorityProjection;
               const snapshot = authoritySnapshotFor(runtime);
+              // Reload intentionally enters a lifecycle transition before its
+              // predecessor-owned terminal frame. That temporary transport
+              // fence is not a refusal or loss of this admitted operation.
+              if (
+                finalAction.kind === "reload" &&
+                runtime?.availability === "transitioning" &&
+                projection?.owner?.hostInstanceId === owner.hostInstanceId &&
+                projection.owner.sessionEpoch === owner.sessionEpoch
+              ) {
+                return;
+              }
               if (
                 projection?.semantic.state !== "following" ||
                 !snapshot ||
@@ -2185,6 +2201,42 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
             const observation = intentObservation(sid);
             if (!observation)
               return Promise.reject(new InputNotConsumedError("Runtime snapshot is unavailable"));
+            if (intent.kind === "reload" && intentId) {
+              // A fast reload can publish completion and the successor before
+              // its admission receipt returns. Capture only reduced authority
+              // evidence before dispatch so that receipt ordering cannot lose
+              // the predecessor's source-consumption result.
+              stopObservingReloadOutcome = useSessionsStore.subscribe(() => {
+                const projection = useSessionsStore
+                  .getState()
+                  .sessions.get(sid)?.authorityProjection;
+                const snapshot =
+                  projection?.semantic.state === "following"
+                    ? projection.authoritativeSnapshot
+                    : undefined;
+                const outcome = snapshot?.recentIntentOutcomes.find(
+                  (candidate) =>
+                    candidate.intentId === intentId &&
+                    candidate.owner.hostInstanceId === observation.owner.hostInstanceId &&
+                    candidate.owner.sessionEpoch === observation.owner.sessionEpoch,
+                );
+                if (outcome) {
+                  observedReloadOutcome = outcome;
+                  stopObservingReloadOutcome?.();
+                  stopObservingReloadOutcome = undefined;
+                  if (
+                    outcome.kind === "reload" &&
+                    outcome.result?.editorSourceConsumed === true &&
+                    (outcome.state === "completed" || outcome.state === "failed")
+                  ) {
+                    // Retire the exact renderer draft at the authority clear
+                    // boundary, before the successor's empty-editor injection
+                    // could mistake it for an unsent remount draft and rebase it.
+                    void commitSubmittedSourceClear(false);
+                  }
+                }
+              });
+            }
             return dispatchSessionIntent(
               sid,
               intent,
@@ -2339,6 +2391,7 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
         if (err instanceof InputNotConsumedError) return;
         throw err;
       } finally {
+        stopObservingReloadOutcome?.();
         submissionsInFlightRef.current.delete(submissionInFlightKey);
         // Acceptance normally ended this earlier (the composer text cleared);
         // this covers rejection/failure paths, which preserve the text.
@@ -2402,13 +2455,15 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
             // Built-ins that take args get a trailing space to invite the
             // user to type the argument. Arg-less ones don't.
             const v = completionFor(chosen);
-            localTextEditGenerationRef.current++;
-            userTextEditGenerationRef.current++;
-            textRef.current = v;
-            setText(v);
-            synchronizeEditorText(v);
-            if (pending && workspacePath) setNewSessionDraft(workspacePath, v);
-            else setSessionDraft(sessionId, v);
+            if (v !== textRef.current) {
+              localTextEditGenerationRef.current++;
+              userTextEditGenerationRef.current++;
+              textRef.current = v;
+              setText(v);
+              synchronizeEditorText(v);
+              if (pending && workspacePath) setNewSessionDraft(workspacePath, v);
+              else setSessionDraft(sessionId, v);
+            }
             if (
               useSessionsStore.getState().sessions.get(sessionId)?.editorInjection !== undefined
             ) {
@@ -2432,13 +2487,15 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
           const chosen = suggestions[slashIndex];
           if (chosen) {
             const completed = completionFor(chosen);
-            localTextEditGenerationRef.current++;
-            userTextEditGenerationRef.current++;
-            textRef.current = completed;
-            setText(completed);
-            synchronizeEditorText(completed);
-            if (pending && workspacePath) setNewSessionDraft(workspacePath, completed);
-            else setSessionDraft(sessionId, completed);
+            if (completed !== textRef.current) {
+              localTextEditGenerationRef.current++;
+              userTextEditGenerationRef.current++;
+              textRef.current = completed;
+              setText(completed);
+              synchronizeEditorText(completed);
+              if (pending && workspacePath) setNewSessionDraft(workspacePath, completed);
+              else setSessionDraft(sessionId, completed);
+            }
             if (
               useSessionsStore.getState().sessions.get(sessionId)?.editorInjection !== undefined
             ) {
@@ -2538,14 +2595,16 @@ export function Composer({ sessionId, suspended = false }: ComposerProps): React
   const handleSuggestionClick = useCallback(
     (entry: SuggestionEntry) => {
       const v = completionFor(entry);
-      localTextEditGenerationRef.current++;
-      userTextEditGenerationRef.current++;
-      textRef.current = v;
-      setText(v);
-      synchronizeEditorText(v);
+      if (v !== textRef.current) {
+        localTextEditGenerationRef.current++;
+        userTextEditGenerationRef.current++;
+        textRef.current = v;
+        setText(v);
+        synchronizeEditorText(v);
+        if (pending && workspacePath) setNewSessionDraft(workspacePath, v);
+        else setSessionDraft(sessionId, v);
+      }
       setDismissed(false); // A3 reset on pick
-      if (pending && workspacePath) setNewSessionDraft(workspacePath, v);
-      else setSessionDraft(sessionId, v);
       // Consume any pending editor injection (same rationale as handleChange).
       if (useSessionsStore.getState().sessions.get(sessionId)?.editorInjection !== undefined) {
         clearEditorInjection(sessionId);

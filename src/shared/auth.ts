@@ -39,7 +39,7 @@ export interface ProviderDef {
 }
 
 /**
- * API-key variables in the exact order Pi 1.0.0 discovers them. Providers
+ * API-key variables in the exact order Pi 1.4.0 discovers them. Providers
  * with ambient-only authentication keep an empty list; their compound rules
  * are mirrored by main's status projection.
  */
@@ -47,7 +47,7 @@ export const PROVIDER_API_KEY_ENV_VARS: Readonly<Record<string, readonly string[
   "amazon-bedrock": [],
   "ant-ling": ["ANT_LING_API_KEY"],
   anthropic: ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
-  "azure-openai-responses": ["AZURE_OPENAI_API_KEY"],
+  azure: ["AZURE_OPENAI_API_KEY"],
   baseten: ["BASETEN_API_KEY"],
   cerebras: ["CEREBRAS_API_KEY"],
   "cloudflare-ai-gateway": ["CLOUDFLARE_API_KEY"],
@@ -104,7 +104,7 @@ function provider(
 
 /**
  * Exact built-in provider IDs, names, primary API-key variables, and OAuth
- * capabilities from the pinned Pi 1.0.0 runtime. Anthropic's documented
+ * capabilities from the pinned Pi 1.4.0 runtime. Anthropic's documented
  * primary variable remains `ANTHROPIC_API_KEY`; its actual resolution order is
  * captured above and mirrored by main.
  */
@@ -112,7 +112,7 @@ export const PROVIDERS: readonly ProviderDef[] = [
   provider("amazon-bedrock", "Amazon Bedrock"),
   provider("ant-ling", "Ant Ling"),
   provider("anthropic", "Anthropic", true, "ANTHROPIC_API_KEY"),
-  provider("azure-openai-responses", "Azure OpenAI"),
+  provider("azure", "Azure"),
   provider("baseten", "Baseten"),
   provider("cerebras", "Cerebras"),
   provider("cloudflare-ai-gateway", "Cloudflare AI Gateway"),

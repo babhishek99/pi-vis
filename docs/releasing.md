@@ -24,14 +24,14 @@ points fail if an unsigned artifact is produced; plain unsigned `dist`
 rehearsals log that the signature-transfer portion was skipped. The runtime
 artifact verifier independently requires packaged
 Electron to match the exact safe lock version (at least 43.5.0) and resolves
-`brace-expansion@5.0.12` from packaged Pi's actual minimatch location. There is
+`brace-expansion@5.0.12` from packaged Pi's actual minimatch location and patched Undici 8.12.2 from Pi. There is
 no supported test-skip path. For a pinned-Pi
 candidate, also rehearse `npm ci`, `npm run test:full`, and `npm run dist`, then
 complete the provider-spending Kitty journey and manual GUI/IME checks in the
 root release guide before publishing.
 
-For the current exact Pi 1.0.0 pin, use
-[`docs/compatibility/pi-1.0.0.md`](compatibility/pi-1.0.0.md) as the acceptance
+For the current exact Pi 1.4.0 pin, use
+[`docs/compatibility/pi-1.4.0.md`](compatibility/pi-1.4.0.md) as the acceptance
 contract. Release verification must keep the published package pristine while
 proving the safe Pi/minimatch `brace-expansion@5.0.12` resolution in both the
 repository and final app, the absence of removed agent-core harness/durable

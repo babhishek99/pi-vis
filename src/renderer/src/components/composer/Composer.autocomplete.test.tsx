@@ -1365,6 +1365,121 @@ describe("Composer autocomplete and authority intents", () => {
     composer.unmount();
   });
 
+  it.each([false, true])(
+    "retains reload completion across its transition when receipt is delayed: %s",
+    async (delayReceipt) => {
+      installInvoke(invoke, false);
+      const defaultInvoke = invoke.getMockImplementation()!;
+      let resolveReceipt!: (receipt: unknown) => void;
+      const receipt = new Promise((resolve) => {
+        resolveReceipt = resolve;
+      });
+      if (delayReceipt) {
+        invoke.mockImplementation((channel: string, payload: unknown) =>
+          channel === "session.dispatchIntent" ? receipt : defaultInvoke(channel, payload),
+        );
+      }
+      const composer = mount();
+      type(composer.textarea(), "/reload");
+      key(composer.textarea(), "Enter");
+      await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(1));
+      const envelope = intentCalls(invoke)[0]!;
+      act(() => {
+        useSessionsStore.setState((state) => {
+          const sessions = new Map(state.sessions);
+          sessions.set(SID, { ...sessions.get(SID)!, availability: "transitioning" });
+          return { sessions };
+        });
+      });
+      publishOutcome(envelope);
+      act(() => {
+        useSessionsStore.setState((state) => {
+          const sessions = new Map(state.sessions);
+          const session = sessions.get(SID)!;
+          sessions.set(SID, {
+            ...session,
+            availability: "available",
+            authorityProjection: {
+              ...session.authorityProjection,
+              owner: { ...OWNER, sessionEpoch: 1 },
+              authoritativeSnapshot: {
+                ...session.authorityProjection?.authoritativeSnapshot,
+                owner: { ...OWNER, sessionEpoch: 1 },
+                recentIntentOutcomes: [],
+              },
+            } as never,
+          });
+          return { sessions };
+        });
+      });
+      resolveReceipt({ status: "admitted", intentId: envelope.intentId, owner: OWNER });
+      await vi.waitFor(() => expect(composer.textarea().value).toBe(""));
+      expect(useSessionsStore.getState().newSessionDrafts.has(WORKSPACE)).toBe(false);
+      await vi.waitFor(() =>
+        expect(
+          useSessionsStore
+            .getState()
+            .sessions.get(SID)
+            ?.toasts.some((toast) => toast.message.startsWith("Reloaded settings")),
+        ).toBe(true),
+      );
+      composer.unmount();
+    },
+  );
+
+  it("dispatches a retyped reload in the successor while its predecessor receipt is delayed", async () => {
+    installInvoke(invoke, false);
+    const defaultInvoke = invoke.getMockImplementation()!;
+    let resolvePredecessor!: (receipt: unknown) => void;
+    const predecessorReceipt = new Promise((resolve) => {
+      resolvePredecessor = resolve;
+    });
+    let dispatches = 0;
+    invoke.mockImplementation((channel: string, payload: unknown) => {
+      if (channel === "session.dispatchIntent" && ++dispatches === 1) {
+        return predecessorReceipt;
+      }
+      return defaultInvoke(channel, payload);
+    });
+    const composer = mount();
+    type(composer.textarea(), "/reload");
+    key(composer.textarea(), "Escape");
+    key(composer.textarea(), "Enter");
+    await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(1));
+    const predecessor = intentCalls(invoke)[0]!;
+    publishOutcome(predecessor);
+    await vi.waitFor(() => expect(composer.textarea().value).toBe(""));
+    patchSession({
+      availability: "available",
+      authorityProjection: followingAuthority("model", { ...OWNER, sessionEpoch: 1 }),
+    });
+
+    type(composer.textarea(), "/reload");
+    key(composer.textarea(), "Escape");
+    key(composer.textarea(), "Enter");
+    await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(2));
+    const successor = intentCalls(invoke)[1]!;
+    expect(successor.expectedOwner.sessionEpoch).toBe(1);
+    expect(successor.intentId).not.toBe(predecessor.intentId);
+    publishOutcome(successor);
+    resolvePredecessor({ status: "admitted", intentId: predecessor.intentId, owner: OWNER });
+    await vi.waitFor(() => expect(composer.textarea().value).toBe(""));
+    composer.unmount();
+  });
+
+  it("deduplicates repeated Enter completing an unchanged reload source", async () => {
+    installInvoke(invoke, false);
+    const composer = mount();
+    type(composer.textarea(), "/reload");
+    key(composer.textarea(), "Enter");
+    key(composer.textarea(), "Enter");
+    await vi.waitFor(() => expect(intentCalls(invoke)).toHaveLength(1));
+    publishOutcome(intentCalls(invoke)[0]!);
+    await vi.waitFor(() => expect(composer.textarea().value).toBe(""));
+    expect(intentCalls(invoke)).toHaveLength(1);
+    composer.unmount();
+  });
+
   it("waits for the editor patch before dispatching a command intent and preserves rejected editor text", async () => {
     let resolvePatch!: (value: unknown) => void;
     const patch = new Promise((resolve) => {

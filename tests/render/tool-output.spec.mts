@@ -113,6 +113,7 @@ test.describe("unified tool card disclosure", () => {
         type: "tool_call",
         data: {
           toolCallId: "full-fidelity-call-id",
+          durationMs: 1234,
           toolName: "inspect_everything",
           input: {
             prompt: "first input line\nINPUT FINAL SENTINEL",
@@ -157,7 +158,7 @@ test.describe("unified tool card disclosure", () => {
 
     const card = page.locator(".tool-card").filter({ hasText: "inspect_everything" });
     const accessibleName =
-      "inspect_everything tool call details — first input line · 2 lines · 1 image · changes";
+      "inspect_everything tool call details — first input line · 2 lines · 1 image · changes · 1.2 s";
     const header = card.getByRole("button", { name: accessibleName, exact: true });
     await expect(card).toBeVisible();
     await expect(header).toHaveAccessibleName(accessibleName);

@@ -129,7 +129,9 @@ export const EscapeResultSchema = z.object({
   hostInstanceId: z.string(),
   sessionEpoch: z.number().int().nonnegative(),
   disposition: EscapeDispositionSchema,
-  target: z.enum(["navigation", "compaction", "retry", "streaming", "bash", "editor"]).optional(),
+  target: z
+    .enum(["navigation", "compaction", "retry", "streaming", "bash", "command", "editor"])
+    .optional(),
   message: z.string().optional(),
   restorationId: z.string().optional(),
 });
@@ -180,8 +182,8 @@ export const RuntimeCatalogSchema = z.object({
   notifications: z
     .array(z.object({ id: z.string(), message: z.string(), type: z.string().optional() }))
     .default([]),
-  statuses: z.record(z.string()).default({}),
-  widgets: z.record(z.array(z.string())).default({}),
+  statuses: z.record(z.string(), z.string()).default({}),
+  widgets: z.record(z.string(), z.array(z.string())).default({}),
   title: z.string().optional(),
   workingMessage: z.string().optional(),
   workingVisible: z.boolean().optional(),
@@ -586,6 +588,14 @@ export const SessionQuerySchema = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
+      type: z.literal("render_tool"),
+      toolCallId: NonEmptyIdSchema,
+      cols: z.number().int().min(20).max(240),
+      expanded: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal("transform_markdown"),
       items: MarkdownTransformBatchSchema,
     })
@@ -609,6 +619,7 @@ export const SessionQueryTypeSchema = z.enum([
   "get_tree",
   "render_entry",
   "render_message",
+  "render_tool",
   "transform_markdown",
   "get_cache_miss_notices",
 ]);
@@ -637,6 +648,7 @@ export const SESSION_QUERY_POLICY = {
   get_tree: { retry: "same_owner" },
   render_entry: { retry: "same_owner" },
   render_message: { retry: "same_owner" },
+  render_tool: { retry: "same_owner" },
   transform_markdown: { retry: "same_owner" },
   get_cache_miss_notices: { retry: "same_owner" },
 } as const satisfies Record<SessionQuery["type"], QueryPolicy>;
@@ -906,7 +918,7 @@ export const SessionIntentSchema = z.union([
       kind: z.literal("setModel"),
       provider: z.string(),
       modelId: NonEmptyIdSchema,
-      /** Persist as Pi's global default; omitted/false remains session-only. */
+      /** Persist as Pi's global default by default; explicit false remains session-only. */
       persist: z.boolean().optional(),
     })
     .strict(),
@@ -914,7 +926,7 @@ export const SessionIntentSchema = z.union([
     .object({
       kind: z.literal("setThinking"),
       level: ThinkingLevelSchema,
-      /** Persist as Pi's global default; omitted/false remains session-only. */
+      /** Persist as Pi's global default by default; explicit false remains session-only. */
       persist: z.boolean().optional(),
     })
     .strict(),
@@ -947,7 +959,13 @@ export const SessionIntentSchema = z.union([
         });
       }
     }),
-  z.object({ kind: z.literal("export"), outputPath: z.string().optional() }).strict(),
+  z
+    .object({
+      kind: z.literal("export"),
+      outputPath: z.string().optional(),
+      forShare: z.boolean().optional(),
+    })
+    .strict(),
   // Refresh mutates Pi's ModelRuntime; the catalog itself is deliberately
   // read separately after this bounded terminal outcome.
   z
@@ -1084,7 +1102,7 @@ const OutcomeBaseSchema = z.object({
 
 export const InterruptIntentResultSchema = z
   .object({
-    target: z.enum(["navigation", "compaction", "retry", "streaming", "bash", "editor"]),
+    target: z.enum(["navigation", "compaction", "retry", "streaming", "bash", "command", "editor"]),
     interrupted: z.boolean(),
   })
   .strict();
@@ -1189,7 +1207,31 @@ export const ReloadIntentResultSchema = z
   })
   .strict();
 /** The child-authoritative file produced by an export effect. */
-export const ExportIntentResultSchema = z.object({ path: z.string().min(1) }).strict();
+export const ExportIntentResultSchema = z
+  .object({
+    path: z.string().min(1).optional(),
+    shareUrl: z
+      .string()
+      .max(4096)
+      .refine((value) => {
+        try {
+          const url = new URL(value);
+          return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
+        } catch {
+          return false;
+        }
+      })
+      .optional(),
+    cancelled: z.literal(true).optional(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      Number(value.path !== undefined) +
+        Number(value.shareUrl !== undefined) +
+        Number(value.cancelled === true) ===
+      1,
+  );
 /** Refresh completion intentionally carries no model catalog payload. */
 export const RefreshModelsIntentResultSchema = z.object({ refreshed: z.literal(true) }).strict();
 /** Credentials and provider errors never cross the authority boundary. */
@@ -1627,8 +1669,8 @@ export const ExtensionUiPresentationBaselineSchema = z
     notifications: z.array(
       z.object({ id: NonEmptyIdSchema, message: z.string(), type: z.string().optional() }).strict(),
     ),
-    statuses: z.record(z.string()),
-    widgets: z.record(z.array(z.string())),
+    statuses: z.record(z.string(), z.string()),
+    widgets: z.record(z.string(), z.array(z.string())),
     dialogs: z.array(
       z
         .object({

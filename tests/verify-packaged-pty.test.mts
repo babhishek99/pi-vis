@@ -38,7 +38,7 @@ function packagedPiFixture({
   const modules = paths.modulesRoot;
   writePackage(piPackageDirectory, {
     name: "@earendil-works/pi-coding-agent",
-    version: "1.0.0",
+    version: "1.4.0",
     dependencies: { minimatch: "10.2.6" },
   });
   const dependencyModules =
@@ -62,6 +62,10 @@ function packagedPiFixture({
       version: hoistedBraceExpansionVersion,
     });
   }
+  writePackage(path.join(piPackageDirectory, "node_modules", "undici"), {
+    name: "undici",
+    version: "8.12.2",
+  });
   return { appBundle, modulesRoot: modules, root };
 }
 
@@ -131,7 +135,7 @@ describe("packaged Pi runtime paths", () => {
     );
     expect(paths.quickJsWasm).toBe(path.join(modules, "quickjs-wasi", "quickjs.wasm"));
     expect(paths.quickJsExtensions).toHaveLength(5);
-    expect(REMOVED_PI_PACKAGES).toEqual(["pi-client", "pi-protocol"]);
+    expect(REMOVED_PI_PACKAGES).toEqual(["chord", "pi-client", "pi-protocol", "pi-server"]);
   });
 
   it("executes the published bundled CLI and requires its exact version", () => {
@@ -145,7 +149,7 @@ describe("packaged Pi runtime paths", () => {
       "cli.js",
     );
 
-    expect(verifyPackagedPiBundleCli(bundledCli)).toBe("1.0.0");
+    expect(verifyPackagedPiBundleCli(bundledCli)).toBe("1.4.0");
     expect(() =>
       verifyPackagedPiBundleCli(path.join(projectRoot, "does-not-exist", "bundle", "cli.js")),
     ).toThrow("Packaged Pi bundled CLI failed to start");
@@ -154,9 +158,6 @@ describe("packaged Pi runtime paths", () => {
   it("executes the codemode worker and QuickJS WASM from the installed runtime", async () => {
     const codemodeEntry = path.join(
       projectRoot,
-      "node_modules",
-      "@earendil-works",
-      "pi-coding-agent",
       "node_modules",
       "@earendil-works",
       "pi-codemode",

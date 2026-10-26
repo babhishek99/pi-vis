@@ -146,23 +146,27 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           sessionEpoch: picker.expectedSessionEpoch,
         }
       : undefined;
-  const pickerCursor = (() => {
-    const semantic = useSessionsStore.getState().sessions.get(sessionId)
-      ?.authorityProjection?.semantic;
-    return semantic?.state === "following" &&
-      semantic.cursor.hostInstanceId === pickerRuntime?.hostInstanceId &&
-      semantic.cursor.sessionEpoch === pickerRuntime.sessionEpoch
-      ? semantic.cursor
-      : undefined;
-  })();
   const requirePickerObservation = () => {
-    if (!pickerRuntime) throw new Error("Picker has no originating runtime identity");
-    return { owner: pickerRuntime, ...(pickerCursor ? { cursor: pickerCursor } : {}) };
+    const current = useSessionsStore.getState().sessions.get(sessionId);
+    if (!pickerRuntime || !sessionMatchesRuntime(current, pickerRuntime))
+      throw new Error("Picker runtime is unavailable");
+    const semantic = current.authorityProjection?.semantic;
+    return {
+      owner: pickerRuntime,
+      ...(semantic?.state === "following" ? { cursor: semantic.cursor } : {}),
+    };
   };
   const pickerSlotIsCurrent = () =>
     useSessionsStore.getState().sessions.get(sessionId)?.pendingPicker === picker;
   const beginPickerAction = (): boolean => {
-    if (!pickerSlotIsCurrent() || pickerActivation.pending) return false;
+    const current = useSessionsStore.getState().sessions.get(sessionId);
+    if (
+      !pickerSlotIsCurrent() ||
+      pickerActivation.pending ||
+      !pickerRuntime ||
+      !sessionMatchesRuntime(current, pickerRuntime)
+    )
+      return false;
     pickerActivation.pending = true;
     return true;
   };
@@ -187,7 +191,7 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
           sessionId={sessionId}
           {...(picker.search !== undefined ? { search: picker.search } : {})}
           onClose={() => closePicker(sessionId)}
-          onPick={async (model, persist = false) => {
+          onPick={async (model) => {
             if (!beginPickerAction()) return;
             try {
               const observation = requirePickerObservation();
@@ -197,7 +201,6 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
                   kind: "setModel",
                   provider: model.provider ?? "",
                   modelId: model.id,
-                  ...(persist ? { persist: true } : {}),
                 },
                 observation,
               );
@@ -248,13 +251,13 @@ export function AppPickerHost({ sessionId }: PickerHostProps): React.ReactElemen
             );
             closePicker(sessionId);
           }}
-          onPick={async (level, persist = false) => {
+          onPick={async (level) => {
             if (!beginPickerAction()) return;
             try {
               const observation = requirePickerObservation();
               const receipt = await dispatchSessionIntent(
                 sessionId,
-                { kind: "setThinking", level, ...(persist ? { persist: true } : {}) },
+                { kind: "setThinking", level },
                 observation,
               );
               if (!pickerRuntimeIsCurrent()) return;
@@ -586,7 +589,7 @@ function ModelPicker({
   sessionId: SessionId;
   search?: string;
   onClose: () => void;
-  onPick: (model: ModelInfo, persist?: boolean) => void;
+  onPick: (model: ModelInfo) => void;
 }): React.ReactElement {
   const session = useSessionsStore((s) => s.sessions.get(sessionId));
   const refreshModelsSilently = useSessionsStore((s) => s.refreshModelsSilently);
@@ -670,17 +673,7 @@ function ModelPicker({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
-            if (
-              e.ctrlKey &&
-              !e.metaKey &&
-              !e.altKey &&
-              !e.shiftKey &&
-              e.key.toLowerCase() === "s"
-            ) {
-              e.preventDefault();
-              const model = filtered[highlightedIndex];
-              if (model) onPick(model, true);
-            } else if (e.key === "ArrowDown") {
+            if (e.key === "ArrowDown") {
               e.preventDefault();
               highlightSourceRef.current = "keyboard";
               setHighlightedIndex((i) =>
@@ -749,7 +742,7 @@ function ModelPicker({
         )}
       </ScrollFadeFrame>
       <div className="picker__footer">
-        <span className="picker__key-hint">Enter selects · Ctrl+S sets default</span>
+        <span className="picker__key-hint">Enter selects · Saves for new sessions</span>
         {refreshFailed && (
           <button
             type="button"
@@ -792,7 +785,7 @@ function ThinkingPicker({
   search?: string;
   onClose: () => void;
   onInvalidSearch: (search: string, levels: readonly ThinkingLevel[]) => void;
-  onPick: (level: ThinkingLevel, persist?: boolean) => void;
+  onPick: (level: ThinkingLevel) => void;
 }): React.ReactElement {
   const [query, setQuery] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(() => {
@@ -814,7 +807,7 @@ function ThinkingPicker({
     exactSearchHandled.current = true;
     const normalized = search.trim().toLowerCase();
     const exact = levels.find((level) => level.toLowerCase() === normalized);
-    if (exact) onPick(exact, false);
+    if (exact) onPick(exact);
     else onInvalidSearch(search, levels);
   }, [levels, onInvalidSearch, onPick, search]);
 
@@ -830,9 +823,9 @@ function ThinkingPicker({
 
   if (search !== undefined) return <div className="picker picker--thinking" />;
 
-  const activate = (persist: boolean): void => {
+  const activate = (): void => {
     const level = filtered[highlightedIndex];
-    if (level) onPick(level, persist);
+    if (level) onPick(level);
   };
 
   return (
@@ -849,16 +842,7 @@ function ThinkingPicker({
             setHighlightedIndex(0);
           }}
           onKeyDown={(event) => {
-            if (
-              event.ctrlKey &&
-              !event.metaKey &&
-              !event.altKey &&
-              !event.shiftKey &&
-              event.key.toLowerCase() === "s"
-            ) {
-              event.preventDefault();
-              activate(true);
-            } else if (event.key === "ArrowDown") {
+            if (event.key === "ArrowDown") {
               event.preventDefault();
               setHighlightedIndex((index) =>
                 filtered.length === 0 ? 0 : Math.min(index + 1, filtered.length - 1),
@@ -868,7 +852,7 @@ function ThinkingPicker({
               setHighlightedIndex((index) => Math.max(index - 1, 0));
             } else if (event.key === "Enter") {
               event.preventDefault();
-              activate(false);
+              activate();
             } else if (event.key === "Escape") {
               event.preventDefault();
               onClose();
@@ -890,7 +874,7 @@ function ThinkingPicker({
               type="button"
               key={level}
               className={`picker__item ${index === highlightedIndex ? "picker__item--highlighted" : ""} ${selected ? "picker__item--selected" : ""}`}
-              onClick={() => onPick(level, false)}
+              onClick={() => onPick(level)}
               onMouseEnter={() => setHighlightedIndex(index)}
               role="option"
               aria-selected={selected}
@@ -905,7 +889,7 @@ function ThinkingPicker({
         })}
       </ScrollFadeFrame>
       <div className="picker__footer">
-        <span className="picker__key-hint">Enter selects · Ctrl+S sets default</span>
+        <span className="picker__key-hint">Enter selects · Saves for new sessions</span>
         <button type="button" className="picker__btn picker__btn--cancel" onClick={onClose}>
           Cancel
         </button>

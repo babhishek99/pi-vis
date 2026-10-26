@@ -2342,5 +2342,7 @@ function createHostTerminal(panelId, panelBridge, { kittyGate, StdinBuffer } = {
     clearScreen() {},
     setTitle(_title) {},
     setProgress(_active) {},
+    // App chrome owns program status; embedded xterm surfaces do not use OSC 7501.
+    setProgramStatus(_status) {},
   };
 }

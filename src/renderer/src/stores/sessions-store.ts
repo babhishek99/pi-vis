@@ -1068,7 +1068,29 @@ export function authoritySnapshotFor(
   session: SessionViewState | undefined,
 ): SemanticSnapshot | undefined {
   const projection = session?.authorityProjection;
-  return projection?.semantic.state === "following" ? projection.authoritativeSnapshot : undefined;
+  return session?.availability === "available" && projection?.semantic.state === "following"
+    ? projection.authoritativeSnapshot
+    : undefined;
+}
+
+/** A lifecycle transport fence preserves only its exact, ordered predecessor. */
+export function canRetainTransitionAuthority(
+  session: SessionViewState | undefined,
+  state: RuntimeStateUpdate,
+): boolean {
+  const projection = session?.authorityProjection;
+  const snapshot = projection?.authoritativeSnapshot;
+  return (
+    state.availability === "transitioning" &&
+    projection?.semantic.state === "following" &&
+    !!snapshot &&
+    state.hostInstanceId === snapshot.owner.hostInstanceId &&
+    state.sessionEpoch === snapshot.owner.sessionEpoch &&
+    projection.owner?.hostInstanceId === snapshot.owner.hostInstanceId &&
+    projection.owner.sessionEpoch === snapshot.owner.sessionEpoch &&
+    projection.semantic.cursor.hostInstanceId === snapshot.owner.hostInstanceId &&
+    projection.semantic.cursor.sessionEpoch === snapshot.owner.sessionEpoch
+  );
 }
 
 export interface LiveShellPresentation {
@@ -1546,7 +1568,11 @@ function applyAuthoritySemanticProjection(
           statusSegments: current.statusSegments,
           widgets: current.widgets,
         };
-  if (authorityProjection.semantic.state !== "following" || !snapshot) {
+  if (
+    current.availability !== "available" ||
+    authorityProjection.semantic.state !== "following" ||
+    !snapshot
+  ) {
     // A retained frame is explicitly diagnostic while fenced. Retain only
     // presentation compatibility fields; clear all control/dispatch state.
     return {
@@ -1797,6 +1823,7 @@ interface SessionsStore {
     filePath: string,
     workspacePath: string,
   ) => Promise<void>;
+  forceRestartSession: (sessionId: SessionId) => Promise<boolean>;
   setSessionFile: (sessionId: SessionId, sessionFile: string) => void;
   setSessionStatus: (
     sessionId: SessionId,
@@ -2584,7 +2611,7 @@ const buildSessionsStore = (
         // still owns liveness; this transcript-plane marker only preserves the
         // completed result as a solid sidebar notification once flashing stops.
         if (event.type === "agent_settled") {
-          unreadStatus = turnErrored ? "error" : "done";
+          unreadStatus = event.aborted ? undefined : turnErrored ? "error" : "done";
         }
         const transcript = applyPiEvent(current.transcript, event);
         const authoritativeUserEcho =
@@ -3242,11 +3269,36 @@ const buildSessionsStore = (
       // Direct snapshots remain an isolated compatibility diagnostic. In
       // particular they must not update owner, liveness, queues, editor,
       // catalog, model, thinking, or intent-derived fields.
+      // A completed/cancelled transition requires an explicit successor (or
+      // restored predecessor) baseline before transport availability can
+      // re-enable controls. The transition itself retains ordered old-owner
+      // frames so its terminal operation evidence can still settle.
+      const authorityProjection =
+        (current.availability === "transitioning" && runtimeState.availability === "available") ||
+        (runtimeState.availability === "transitioning" &&
+          !canRetainTransitionAuthority(current, runtimeState))
+          ? unavailableAuthority(
+              current.authorityProjection ?? createRendererAuthorityState(),
+              "runtime_transition_completed",
+            )
+          : current.authorityProjection;
       const sessions = new Map(state.sessions);
-      sessions.set(sessionId, {
+      const runtime = {
         ...current,
         availability: runtimeState.availability,
         runtimeSnapshot: stale ? prior : (incoming ?? prior),
+      };
+      sessions.set(sessionId, {
+        ...(authorityProjection
+          ? applyAuthoritySemanticProjection(runtime, authorityProjection)
+          : runtime),
+        ...(authorityProjection ? { authorityProjection } : {}),
+        ...(current.panel && runtimeState.availability !== "available"
+          ? { panel: { ...current.panel, inputEnabled: false } }
+          : {}),
+        ...(current.unifiedPanel && runtimeState.availability !== "available"
+          ? { unifiedPanel: { ...current.unifiedPanel, inputEnabled: false } }
+          : {}),
       });
       return { sessions };
     });
@@ -3328,10 +3380,32 @@ const buildSessionsStore = (
         const droppedReplayCount = transcriptFollowing
           ? invalidReplayEntries.length
           : replayTranscriptEntries.length;
-        const semanticProjection = applyAuthoritySemanticProjection(current, authorityProjection);
+        // A successful, owner-fenced attach confirms transport availability
+        // when an earlier ready/runtime event was missed. It cannot overtake
+        // a newer explicit transition or terminal lifecycle fence.
+        const attachedTransport =
+          current.availability !== "transitioning" &&
+          current.status !== "failed" &&
+          current.status !== "exited"
+            ? { ...current, availability: "available" as const }
+            : current;
+        const semanticProjection = applyAuthoritySemanticProjection(
+          attachedTransport,
+          authorityProjection,
+        );
         const unifiedPanelIsNew = unifiedPanel !== undefined && current.unifiedPanel === undefined;
         const unifiedRevealNow =
           !unifiedPanelIsNew || unifiedPanelCanOwnCurrentDraft(state, semanticProjection);
+        const sameExtensionHost =
+          current.authorityProjection?.owner?.hostInstanceId ===
+          authorityProjection.owner?.hostInstanceId;
+        const previousExtensionNotifications = new Map(
+          sameExtensionHost
+            ? current.toasts
+                .filter((toast) => !toast.id.startsWith("toast-"))
+                .map((toast) => [toast.id, toast])
+            : [],
+        );
         sessions.set(sessionId, {
           ...appendQueueRestorations(semanticProjection, restorations),
           authorityProjection,
@@ -3345,7 +3419,8 @@ const buildSessionsStore = (
                 buffer: [...customPanel.ansi],
                 mode: customPanel.baseline.mode,
                 authority: true,
-                inputEnabled: customPanel.inputEnabled,
+                inputEnabled:
+                  semanticProjection.availability === "available" && customPanel.inputEnabled,
                 inputAcknowledgedThrough: customPanel.baseline.inputAcknowledgedThrough,
                 renderRevision: customPanel.baseline.keyframe.renderRevision,
                 keyframeReady: customPanel.baseline.keyframe.kind === "keyframe",
@@ -3367,7 +3442,8 @@ const buildSessionsStore = (
                 buffer: [...unifiedPanel.ansi],
                 mode: unifiedPanel.baseline.mode,
                 authority: true,
-                inputEnabled: unifiedPanel.inputEnabled,
+                inputEnabled:
+                  semanticProjection.availability === "available" && unifiedPanel.inputEnabled,
                 inputAcknowledgedThrough: unifiedPanel.baseline.inputAcknowledgedThrough,
                 renderRevision: unifiedPanel.baseline.keyframe.renderRevision,
                 keyframeReady: unifiedPanel.baseline.keyframe.kind === "keyframe",
@@ -3403,10 +3479,14 @@ const buildSessionsStore = (
                 widgets: new Map(
                   Object.entries(extension.widgets).map(([key, lines]) => [key, [...lines]]),
                 ),
-                toasts: extension.notifications.map((notification) => ({
-                  ...notification,
-                  createdAt: Date.now(),
-                })),
+                toasts: [
+                  ...current.toasts.filter((toast) => toast.id.startsWith("toast-")),
+                  ...extension.notifications.map((notification) => ({
+                    ...notification,
+                    createdAt:
+                      previousExtensionNotifications.get(notification.id)?.createdAt ?? Date.now(),
+                  })),
+                ].sort((left, right) => left.createdAt - right.createdAt),
               }
             : {}),
           droppedTranscriptEntryCount: current.droppedTranscriptEntryCount + droppedReplayCount,
@@ -3668,7 +3748,8 @@ const buildSessionsStore = (
                 buffer: [...customPanel.ansi],
                 mode: customPanel.baseline.mode,
                 authority: true,
-                inputEnabled: customPanel.inputEnabled,
+                inputEnabled:
+                  semanticProjection.availability === "available" && customPanel.inputEnabled,
                 inputAcknowledgedThrough: customPanel.baseline.inputAcknowledgedThrough,
                 renderRevision: customPanel.baseline.keyframe.renderRevision,
                 keyframeReady: customPanel.baseline.keyframe.kind === "keyframe",
@@ -3690,7 +3771,8 @@ const buildSessionsStore = (
                 buffer: [...unifiedPanel.ansi],
                 mode: unifiedPanel.baseline.mode,
                 authority: true,
-                inputEnabled: unifiedPanel.inputEnabled,
+                inputEnabled:
+                  semanticProjection.availability === "available" && unifiedPanel.inputEnabled,
                 inputAcknowledgedThrough: unifiedPanel.baseline.inputAcknowledgedThrough,
                 renderRevision: unifiedPanel.baseline.keyframe.renderRevision,
                 keyframeReady: unifiedPanel.baseline.keyframe.kind === "keyframe",
@@ -3988,7 +4070,7 @@ const buildSessionsStore = (
         const sFinal = s;
 
         if (request.method === "notify") {
-          const toastId = `toast-${++toastCounter}`;
+          const toastId = `extension-notify:${request.id}`;
           const notifyReq = request as { message: string; notifyType?: string };
           sessions.set(sessionId, {
             ...sFinal,
@@ -5649,7 +5731,8 @@ const buildSessionsStore = (
       const s = sessions.get(sessionId);
       if (!s) return {};
       const next: SessionViewState = {
-        ...resetRuntimeState(s),
+        ...s,
+        runtimeSnapshot: undefined,
         sessionFile,
         transcript: createTranscriptState(),
         hasTreeHistory: false,
@@ -6105,6 +6188,20 @@ const buildSessionsStore = (
       }
     }
     get().removeSession(sessionId, opts);
+  },
+
+  forceRestartSession: async (sessionId) => {
+    try {
+      await window.pivis.invoke("session.forceRestart", { sessionId });
+      return true;
+    } catch (error) {
+      get().addToast(
+        sessionId,
+        `Host restart failed: ${error instanceof Error ? error.message : String(error)}`,
+        "error",
+      );
+      return false;
+    }
   },
 
   archiveSession: async (sessionId, filePath, workspacePath) => {

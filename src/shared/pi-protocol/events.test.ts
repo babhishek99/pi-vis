@@ -16,6 +16,23 @@ const usage = {
 };
 
 describe("PiEventSchema", () => {
+  it("preserves cancelled settlement and authoritative tool duration from Pi 1.1+", () => {
+    expect(PiEventSchema.parse({ type: "agent_settled", aborted: true })).toEqual({
+      type: "agent_settled",
+      aborted: true,
+    });
+    expect(
+      PiEventSchema.parse({
+        type: "tool_execution_end",
+        toolCallId: "measured",
+        toolName: "codemode",
+        result: { content: [] },
+        isError: false,
+        durationMs: 12.5,
+      }),
+    ).toMatchObject({ durationMs: 12.5 });
+  });
+
   it.each(["start", "toolcall_start", "toolcall_delta", "toolcall_end", "done", "error"])(
     "accepts the %s assistant stream subevent as a known message update",
     (type) => {

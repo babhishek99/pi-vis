@@ -116,6 +116,14 @@ export function IconArchive(props: IconProps): React.ReactElement {
   );
 }
 
+export function IconRestart(props: IconProps): React.ReactElement {
+  return (
+    <Icon {...props}>
+      <path d="M2 4a4.2 4.2 0 1 1-.2 3M2 1.5V4h2.5" />
+    </Icon>
+  );
+}
+
 /** File — generic pending composer attachment. */
 export function IconFile(props: IconProps): React.ReactElement {
   return (

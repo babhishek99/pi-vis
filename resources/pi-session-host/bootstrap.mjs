@@ -8,6 +8,11 @@ import { existsSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  LEGACY_AZURE_PROVIDER,
+  normalizePiModelPattern,
+  normalizePiProviderId,
+} from "./pi-compatibility.mjs";
 
 // ─── Node-version compatibility shim ───────────────────────────────────────────
 // undici v8 (bundled with pi) destructures `markAsUncloneable` from
@@ -133,105 +138,6 @@ export function createPiBuiltinExtensions(pi, pinnedLlamaExtension) {
   return Object.freeze(extensions.map((extension) => Object.freeze(extension)));
 }
 
-/**
- * Read the active tool declaration at the tip of a persisted transcript.
- *
- * Pi 1.0.0 records tool changes on system messages, but its public
- * createAgentSessionFromServices() path always supplies an initial default
- * loadout. That prevents AgentSession's constructor from running its own
- * transcript restoration hook. Keep this projection deliberately small and
- * public-surface-only so the host can bridge that SDK integration gap without
- * reaching into AgentSession internals. Re-audit and remove this adapter when
- * advancing the exact Pi pin beyond 1.0.0.
- */
-export function resolveTranscriptToolLoadout(sessionManager) {
-  const messages = sessionManager?.buildSessionContext?.()?.messages;
-  if (!Array.isArray(messages)) return undefined;
-
-  const active = new Map();
-  let timestamp;
-  for (const message of messages) {
-    if (message?.role !== "system") continue;
-    timestamp ??= message.timestamp;
-    const removed = Array.isArray(message.toolsRemoved) ? message.toolsRemoved : [];
-    const added = Array.isArray(message.toolsAdded) ? message.toolsAdded : [];
-    for (const tool of removed) {
-      if (typeof tool?.name === "string") active.delete(tool.name);
-    }
-    for (const tool of added) {
-      if (typeof tool?.name !== "string") continue;
-      active.set(tool.name, true);
-    }
-  }
-  return timestamp !== undefined || active.size > 0 ? [...active.keys()] : undefined;
-}
-
-/**
- * Restore transcript-declared tools through Pi's public extension surface.
- *
- * Deferred MCP definitions may register after session_start. The first pass
- * restores every definition already present; before the next agent request a
- * second pass adds definitions that reconnected in the meantime. Additive
- * loadout changes preserve that pending restore, while removal of a
- * transcript-restored active tool cancels it like Pi's native pending behavior.
- */
-export function createTranscriptToolRestorationExtension(sessionManager) {
-  return (pi) => {
-    let initialized = false;
-    let restoredActive = new Set();
-    let pending = new Set();
-
-    const availableNames = () =>
-      new Set(
-        pi
-          .getAllTools()
-          .filter((tool) => tool.exposure !== "hidden")
-          .map((tool) => tool.name),
-      );
-
-    pi.on("session_start", (event) => {
-      initialized = false;
-      restoredActive = new Set();
-      pending = new Set();
-      // Pi's native reload path already carries its current/pending loadout
-      // through the ResourceLoader replacement. Replaying the transcript here
-      // would discard newly configured defaults. This adapter exists only for
-      // the factory-created session constructor gap described above.
-      if (event?.reason === "reload") return;
-
-      const loadout = resolveTranscriptToolLoadout(sessionManager);
-      if (loadout === undefined) return;
-
-      const available = availableNames();
-      const active = loadout.filter((name) => available.has(name));
-      pi.setActiveTools(active);
-      const requested = new Set(loadout);
-      restoredActive = new Set(pi.getActiveTools().filter((name) => requested.has(name)));
-      pending = new Set(loadout.filter((name) => !available.has(name)));
-      initialized = true;
-    });
-
-    pi.on("before_agent_start", () => {
-      if (!initialized || pending.size === 0) return;
-
-      const current = pi.getActiveTools();
-      const currentSet = new Set(current);
-      if ([...restoredActive].some((name) => !currentSet.has(name))) {
-        pending.clear();
-        return;
-      }
-
-      const available = availableNames();
-      const connected = [...pending].filter((name) => available.has(name) && !currentSet.has(name));
-      if (connected.length > 0) pi.setActiveTools([...current, ...connected]);
-      // Match Pi's native prompt boundary: deferred names get one reconnect
-      // opportunity before this provider request, then any unresolved names
-      // are abandoned rather than unexpectedly activating on a later turn.
-      pending.clear();
-    });
-  };
-}
-
 // ─── Session runtime options ─────────────────────────────────────────────────
 
 /**
@@ -270,7 +176,10 @@ export function resolveSessionRuntimeOverrides(sessionManager, modelRuntime, run
   const modelReference = context.model ?? resumedModel;
 
   if (modelReference) {
-    const model = modelRuntime.getModel(modelReference.provider, modelReference.modelId);
+    const model = modelRuntime.getModel(
+      normalizePiProviderId(modelReference.provider),
+      modelReference.modelId,
+    );
     if (model && modelRuntime.hasConfiguredAuth(model.provider)) {
       overrides.model = model;
     }
@@ -334,9 +243,12 @@ function modelsMatch(left, right) {
  * leaves model selection to the configured scope/settings, matching Pi's
  * normal fallback, while its thinking level still retains precedence. Only a
  * genuinely fresh, metadata-free session chooses an initial model from the
- * configured scope: the saved default when it is in scope, otherwise the first
- * resolved entry. An explicit thinking level on that scope entry is used only
- * when persisted/resume thinking did not already provide a stronger override.
+ * configured scope: an authenticated saved global choice takes precedence,
+ * including when older project settings exclude it from the cycling scope.
+ * Fresh sessions use the saved global thinking default ahead
+ * of scoped/per-model preferences, so an explicit UI thinking selection is
+ * retained by every later new session. Persisted/resume thinking wins, and a
+ * scope entry supplies thinking only when no global default exists.
  */
 export async function resolveSessionRuntimeOptions({
   sessionManager,
@@ -354,7 +266,10 @@ export async function resolveSessionRuntimeOptions({
   const configuredPatterns = settingsManager?.getEnabledModels?.();
   const scopeResult =
     Array.isArray(configuredPatterns) && configuredPatterns.length > 0
-      ? await resolveModelScopeWithDiagnostics([...configuredPatterns], modelRuntime)
+      ? await resolveModelScopeWithDiagnostics(
+          configuredPatterns.map(normalizePiModelPattern),
+          modelRuntime,
+        )
       : { scopedModels: [], diagnostics: [] };
   const scopedModels = Array.isArray(scopeResult?.scopedModels) ? scopeResult.scopedModels : [];
   const diagnostics = Array.isArray(scopeResult?.diagnostics) ? scopeResult.diagnostics : [];
@@ -363,32 +278,52 @@ export async function resolveSessionRuntimeOptions({
   const hasExistingMessages = Array.isArray(context.messages) && context.messages.length > 0;
   const hasPersistedModel = isModelReference(context.model);
   const hasResumeModel = isModelReference(runtimeResumeState?.model);
-  const mayChooseScopedInitialModel =
-    scopedModels.length > 0 &&
+  const mayChooseInitialDefaults =
     !hasExistingMessages &&
     !hasPersistedModel &&
     !hasResumeModel &&
     sessionOverrides.model === undefined;
+  const globalSettings = settingsManager?.getGlobalSettings?.();
+  const savedProvider = globalSettings?.defaultProvider ?? settingsManager?.getDefaultProvider?.();
+  const savedModelId = globalSettings?.defaultModel ?? settingsManager?.getDefaultModel?.();
 
+  if (mayChooseInitialDefaults && sessionOptions.thinkingLevel === undefined) {
+    const savedThinking =
+      globalSettings?.defaultThinkingLevel ?? settingsManager?.getDefaultThinkingLevel?.();
+    if (["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(savedThinking)) {
+      sessionOptions.thinkingLevel = savedThinking;
+    }
+  }
+
+  const mayChooseScopedInitialModel = scopedModels.length > 0 && mayChooseInitialDefaults;
   if (mayChooseScopedInitialModel) {
-    const savedProvider = settingsManager?.getDefaultProvider?.();
-    const savedModelId = settingsManager?.getDefaultModel?.();
     const savedModel =
       typeof savedProvider === "string" &&
       savedProvider.length > 0 &&
       typeof savedModelId === "string" &&
       savedModelId.length > 0
-        ? modelRuntime.getModel(savedProvider, savedModelId)
+        ? modelRuntime.getModel(normalizePiProviderId(savedProvider), savedModelId)
         : undefined;
     const selected =
-      (savedModel && scopedModels.find((entry) => modelsMatch(entry?.model, savedModel))) ??
-      scopedModels[0];
+      savedModel && modelRuntime.hasConfiguredAuth(savedModel.provider)
+        ? (scopedModels.find((entry) => modelsMatch(entry?.model, savedModel)) ?? {
+            model: savedModel,
+          })
+        : scopedModels[0];
     if (selected?.model) {
       sessionOptions.model = selected.model;
       if (sessionOptions.thinkingLevel === undefined && selected.thinkingLevel !== undefined) {
         sessionOptions.thinkingLevel = selected.thinkingLevel;
       }
     }
+  } else if (
+    mayChooseInitialDefaults &&
+    typeof savedProvider === "string" &&
+    typeof savedModelId === "string"
+  ) {
+    const savedModel = modelRuntime.getModel(normalizePiProviderId(savedProvider), savedModelId);
+    if (savedModel && modelRuntime.hasConfiguredAuth(savedModel.provider))
+      sessionOptions.model = savedModel;
   }
 
   return { sessionOptions, diagnostics };
