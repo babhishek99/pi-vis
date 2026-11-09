@@ -531,7 +531,8 @@ test.describe("Slash commands", () => {
         );
       });
 
-      await shellARow.click();
+      // Select the label, not one of the row's hover-revealed action buttons.
+      await shellARow.locator(".sidebar__session-name").click();
       await expect(terminal).toBeVisible({ timeout: 10_000 });
       await expect(window.locator(".composer__textarea")).toHaveCount(0);
       await expect(terminal).toHaveAttribute("aria-busy", "false", { timeout: 15_000 });
@@ -595,7 +596,7 @@ test.describe("Slash commands", () => {
 
       const shellBRow = window.locator(".sidebar__session").filter({ hasText: "Shell B" });
       await expect(shellBRow).toBeVisible();
-      await shellBRow.click();
+      await shellBRow.locator(".sidebar__session-name").click();
       await expect(terminal).toHaveCount(0);
       await expect(window.locator(".session-header__name-btn")).toContainText("Shell B");
       await expect(composer).toBeFocused();
@@ -609,7 +610,7 @@ test.describe("Slash commands", () => {
       await expect(composer).toBeFocused();
       await expect(window.locator(".composer__attachment-item--file")).toHaveCount(1);
 
-      await shellARow.click();
+      await shellARow.locator(".sidebar__session-name").click();
       await expect(
         window.locator(".shell-turn").filter({ hasText: "test-background-shell" }),
       ).toContainText("background shell complete");

@@ -60,6 +60,12 @@ export interface SessionSummary {
   filePath: string;
   id: string;
   name?: string | undefined;
+  /** Persisted parent-file reference for sidebar presentation only. Forks/clones
+   *  also carry this; it is not runtime identity or evidence of liveness. */
+  parentSession?: string | undefined;
+  /** Persisted header/name-derived sidebar hint, absent without positive evidence.
+   *  This is presentation metadata, NOT runtime identity or liveness. */
+  isSubagent?: boolean | undefined;
   mtime: number;
   /** Epoch-ms of the most recent user-authored entry (prompt / `!bash`),
    *  read from the session file. Absent for sessions with no user messages,

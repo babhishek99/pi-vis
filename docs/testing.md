@@ -69,6 +69,27 @@ but has missing or corrupt bundle chunks therefore cannot pass the artifact gate
 
 The Pi 1.4.0 replacement-operations branch of `real-sdk-shell-turns.spec.mts` uses a workspace release-file gate rather than a delay: it reloads the real Electron renderer after the first chunk, requires that chunk exactly once with no PTY surface while the second remains blocked, then releases and verifies canonical settlement.
 
+## Sidebar organization coverage
+
+`src/shared/subagent-sessions.test.ts` and
+`src/main/sessions/session-discovery.test.ts` cover conservative child detection,
+normal forks/clones, explicit name clears, malformed optional lineage, unchanged
+bounded I/O with conservative unread-middle/boundary handling, and fresh/cache isolation. Settings/schema and
+`components/shell/session-groups.test.ts` cover durable membership, defaults,
+workspace confinement, immutable moves, stale keys, and duplicate membership.
+`Sidebar.organization.test.tsx` covers default hiding and the active-child
+exception beyond page boundaries, live-name clears, group editing, independent
+pagination, and failed-save draft retention.
+
+`tests/render/sidebar-organization.spec.mts` exercises the actual Settings toggle,
+keyboard entry, Escape ownership during streaming, focus trapping/restoration,
+group controls, pending/failed-save focus containment, removal rollback focus,
+narrow layouts, and light/dark screenshots. The matching Electron
+`tests/e2e/sidebar-organization.spec.mts` drives real discovery and settings IPC,
+checks collapsed membership/pins/visibility across a full app relaunch, and
+compares every fixture JSONL byte before and after organization. It uses an
+isolated user-data/session tree and a fake host; no paid provider is involved.
+
 ## Workspace session-search coverage
 
 Search tests use a generated isolated JSONL corpus: two workspaces, a mapped worktree, more than 30 sessions, exact/prefix/camel/snake/path/typo cases, pre-compaction and alternate-branch-only matches, repeated occurrences, corrupt/intermediate rows, incomplete and appended rows, and an excluded archived source. Unit/integration coverage verifies catalog ownership/confinement, transactional append/rebuild/corruption/restart behavior, deterministic relevance (Recall@10, MRR, nDCG), generation fencing, revision-invalidated pagination, exact context relocation/stale outcomes, and opaque-target validation. Runtime-pin coverage exercises Linux `/proc/self/fd` policy independently from Darwin/Windows alias policy and opens the identity-verified hard link through the real pinned Pi `SessionManager`, proving repeated reads and appends stay on the validated inode. `resources/pi-session-host/session-lineage.test.mjs` additionally proves existing and normally deferred fork successors retain canonical lineage through atomic serialization plus public manager reload, while crafted source-path cases remain untouched. Electron/render coverage proves scope and worktree inclusion, sidebar-pagination independence, default-on/restart-scoped enablement, disabled-launch chrome suppression, ESC/focus behavior, preview's zero host/session side effects, and explicit open's normal activation-visit release behavior.

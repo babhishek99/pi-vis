@@ -34,8 +34,8 @@ workspace. The `workspace.list` IPC channel (renamed from `workspace.recents`)
 returns the ordered, existence-pruned list.
 
 **Pinned sessions** (`settings.pinnedSessions`, a global array of session-file paths):
-a pinned row floats to the TOP of its workspace's session list, above the
-activity-sorted rows, in persisted manual order. Each row has a pin button (hover-
+a pinned row floats to the TOP of its containing session group (or the ungrouped
+list), above activity-sorted peers, in persisted manual order. Each row has a pin button (hover-
 revealed when unpinned, always-visible accent-filled when pinned); pinning appends
 to the array (lands at the bottom of the pinned group), and pinned rows are
 HTML-draggable to reorder within the group (drop targets only exist on pinned
@@ -43,10 +43,9 @@ rows, so the group is self-contained). The array is global across workspaces —
 workspace view renders only its own keys in their relative order. Keyed by file
 path (stable across relaunch and shared by the live row and its stored counterpart,
 so a pin survives the live→stored idle-eviction transition). Stale keys are filtered
-at render, not pruned, matching `archivedSessions`' trade-off. Because pinned rows
-sit at the front of the unified list and pagination slices from the front
-(`visibleSessions = unifiedSessions.slice(0, visibleCount)`), pinned rows are never
-pushed off the first page by newer unpinned sessions.
+at render, not pruned, matching `archivedSessions`' trade-off. Each section is
+paginated independently from the front, so newer unpinned peers cannot push its
+pinned rows off that section's first page. A collapsed group remains collapsed.
 
 Unpinned activity order advances from an authoritative delivered user message,
 using the message's authored timestamp. Merely opening or reattaching a saved
@@ -74,6 +73,50 @@ authority plane or an idle host. Dialog focus, Escape, and backdrop behavior
 follow the archive convention. Confirmation closes the dialog immediately and
 leaves restart reachable during successor startup; startup failures surface through
 the ordinary session status and a toast.
+
+### Session groups and sub-agent visibility
+
+The **Create session group** folder action beside **New session** creates a named
+workspace-local section. Groups render in saved creation order above **Ungrouped**.
+Each header has an independent disclosure, session count, and hover/keyboard-focus
+rename/remove actions. Removing a group immediately returns its sessions to
+Ungrouped; it never archives, closes, deletes, or rewrites a session. Empty groups
+remain available as destinations.
+
+A session row's **Move session to group** folder action opens an app-owned dialog
+with the workspace's groups and Ungrouped. **New group** in that dialog creates a
+destination and assigns the session in one settings patch. Moving expands the
+destination and reveals the moved row's page. Groups use `settings.sessionGroups`
+entries `{ id, workspacePath, name, sessionFiles, collapsed }`; membership is keyed
+by durable session-file path, just like pins, and survives live/stored transitions
+and relaunch. Pathless pending sessions cannot be assigned yet. Missing files are
+ignored, not pruned. Duplicate hand-edited membership renders only in the first
+matching group. Pins and activity ordering are preserved within each section, and
+each section has its own 30-row page budget.
+
+Settings → Interface → **Show sub-agent sessions** defaults off and takes effect
+immediately. Discovery supplies a conservative saved-history hint only when a
+nonblank `parentSession` header accompanies a latest saved name ending in the
+pi-subagents-generated `#<8 hex>` suffix. Parent references alone do not hide normal
+forks or clones. Empty names explicitly clear prior generated names, matching
+pinned Pi. Old files without lineage and renamed/promoted children remain visible
+instead of being guessed. Bounded discovery never uses a head-only name to hide a
+session when a skipped middle or discarded boundary row could contain a rename;
+only a later sampled name resolves that uncertainty. Live rows use saved lineage
+plus the presented live name, including explicit clears, rather than resurrecting
+a stale discovery name. The explicitly active child remains in the list even
+while its inactive peers are hidden, and activation reveals its section page
+without reordering rows or overriding a deliberate collapse. Pins do not
+bypass this filter. Filtering precedes section pagination/counts and changes no
+runtime, archives, group membership, JSONL, or saved-session search behavior.
+
+Group dialogs claim Escape, trap focus, and restore the invoking control (or the
+moved row when it remounts). During a slow save the focusable dialog itself keeps
+keyboard focus while controls are disabled. Failed saves return focus to the
+preserved draft with an inline error; settings persistence rolls back the
+optimistic update. Failed group removal re-queries the restored header after
+rollback rather than focusing its detached predecessor. Labels use
+`FadeText`, chrome uses the shared folder SVGs, and all styling uses semantic tokens.
 
 ### Session activity indicators
 

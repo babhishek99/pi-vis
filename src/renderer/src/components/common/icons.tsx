@@ -134,6 +134,24 @@ export function IconFile(props: IconProps): React.ReactElement {
   );
 }
 
+/** Folder — sidebar session organization. */
+export function IconFolder(props: IconProps): React.ReactElement {
+  return (
+    <Icon {...props}>
+      <path d="M1.5 3.25V2.5h3l1 1h5v6h-9z" />
+    </Icon>
+  );
+}
+
+export function IconFolderPlus(props: IconProps): React.ReactElement {
+  return (
+    <Icon {...props}>
+      <path d="M1.5 3.25V2.5h3l1 1h5v6h-9z" />
+      <path d="M6 5v3M4.5 6.5h3" />
+    </Icon>
+  );
+}
+
 /** Comment bubble — code-review notes. */
 export function IconComment(props: IconProps): React.ReactElement {
   return (

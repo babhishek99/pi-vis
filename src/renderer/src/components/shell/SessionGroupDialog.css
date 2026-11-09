@@ -1,0 +1,99 @@
+.session-group-dialog {
+  max-height: calc(100dvh - 2 * var(--space-5));
+  min-height: 0;
+}
+
+.session-group-dialog .confirm-dialog__title {
+  margin: 0;
+}
+
+.session-group-dialog__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.session-group-dialog__label {
+  color: var(--text-muted);
+  font-size: 0.857em;
+}
+
+.session-group-dialog__input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-sunken);
+  color: var(--text);
+  padding: var(--space-3);
+  font: inherit;
+}
+
+.session-group-dialog__input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.session-group-dialog__choices {
+  margin: 0;
+  padding: var(--space-2);
+  border: 0;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1 1 auto;
+}
+
+.session-group-dialog__choices legend {
+  padding: 0 0 var(--space-2);
+}
+
+.session-group-dialog__choice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  min-width: 0;
+}
+
+.session-group-dialog__choice .fade-text {
+  min-width: 0;
+}
+
+.session-group-dialog__choice:is(:hover, :focus-within) {
+  background: var(--surface-2);
+}
+
+.session-group-dialog__choice input {
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.session-group-dialog__choice input:focus-visible {
+  outline: none;
+}
+
+.session-group-dialog__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.857em;
+}
+
+.session-group-dialog__create {
+  margin-right: auto;
+  padding: var(--space-2);
+  background: none;
+  border: none;
+  border-radius: var(--radius-md);
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.857em;
+}
+
+.session-group-dialog__create:is(:hover, :focus-visible) {
+  background: var(--surface-2);
+}

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { SessionSummary, WorktreeIdentity } from "@shared/ipc-contract.js";
 import { SessionHeaderSchema } from "@shared/session-file/entries.js";
+import { isSubagentSession } from "@shared/subagent-sessions.js";
 import { inspectWorktree } from "../git/git.js";
 import { getSettings } from "../settings-store.js";
 import { mapLimit } from "../util/concurrency.js";
@@ -13,8 +14,8 @@ function getSessionsDir(): string {
   return process.env["PIVIS_SESSIONS_DIR"] ?? path.join(os.homedir(), ".pi", "agent", "sessions");
 }
 
-// Cache: filePath → { mtime, summary }
-const cache = new Map<string, { mtime: number; summary: SessionSummary }>();
+// Cache: filePath → { mtime, summary }. Summaries never escape by reference.
+const cache = new Map<string, { mtime: number; summary: Readonly<SessionSummary> }>();
 
 // Discovery runs on the main process IPC path. Never read arbitrarily large
 // session files into memory while listing the sidebar; sample the start (for
@@ -75,6 +76,9 @@ export interface ExtractedSessionMeta {
   preview: string;
   messageCount: number;
   name: string | null;
+  /** False when bounded sampling may have skipped a newer rename. An uncertain
+   *  display name must never be used as positive evidence for hiding a session. */
+  nameIsAuthoritative?: false;
   /** Epoch-ms of the most recent *user-authored* entry (prompt or `!bash`),
    *  derived from the sampled session file. Unlike `mtime`, this is unaffected
    *  by passive operations (e.g. merely opening a session, which makes pi
@@ -85,13 +89,17 @@ export interface ExtractedSessionMeta {
   lastActiveAt: number | null;
 }
 
-function parseSessionMetaLines(lines: string[]): ExtractedSessionMeta {
+function parseSessionMetaLines(
+  lines: string[],
+  authoritativeNamesStartAt = 0,
+): ExtractedSessionMeta {
   let preview = "";
   let messageCount = 0;
   let name: string | null = null;
+  let nameIsAuthoritative = authoritativeNamesStartAt === 0;
   let lastActiveAt: number | null = null;
 
-  for (const line of lines) {
+  for (const [index, line] of lines.entries()) {
     if (!line.trim()) continue;
     try {
       const entry = JSON.parse(line) as Record<string, unknown>;
@@ -120,26 +128,35 @@ function parseSessionMetaLines(lines: string[]): ExtractedSessionMeta {
           }
         }
       }
-      if (entry["type"] === "session_info" && typeof entry["name"] === "string" && entry["name"]) {
-        name = entry["name"];
+      if (entry["type"] === "session_info" && typeof entry["name"] === "string") {
+        // Pinned Pi treats an empty/whitespace name as an explicit clear.
+        name = entry["name"].trim() ? entry["name"] : "";
+        nameIsAuthoritative = index >= authoritativeNamesStartAt;
       }
     } catch {
       /* skip bad lines */
     }
   }
 
-  return { preview, messageCount, name, lastActiveAt };
+  return {
+    preview,
+    messageCount,
+    name,
+    lastActiveAt,
+    ...(nameIsAuthoritative ? {} : { nameIsAuthoritative: false as const }),
+  };
 }
 
 function linesFromBoundedChunks(
   head: string,
   tail?: string,
   tailStartsAtLineBoundary = false,
-): string[] {
+): { lines: string[]; tailLineStart: number } {
   const lines: string[] = [];
   const headParts = head.split("\n");
   const headComplete = head.endsWith("\n");
   lines.push(...(headComplete ? headParts : headParts.slice(0, -1)));
+  const tailLineStart = lines.length;
 
   if (tail !== undefined) {
     const tailParts = tail.split("\n");
@@ -150,20 +167,32 @@ function linesFromBoundedChunks(
     lines.push(...(tailStartsAtLineBoundary ? tailParts : tailParts.slice(1)));
   }
 
-  return lines;
+  return { lines, tailLineStart };
 }
 
 function extractSessionMetaFromSample(
   head: string,
   tail?: string,
   tailStartsAtLineBoundary = false,
+  skippedMiddle = false,
 ): ExtractedSessionMeta {
-  return parseSessionMetaLines(linesFromBoundedChunks(head, tail, tailStartsAtLineBoundary));
+  const { lines, tailLineStart } = linesFromBoundedChunks(head, tail, tailStartsAtLineBoundary);
+  // A rename may be in the unread middle or the discarded boundary row. Only
+  // metadata after that uncertainty can positively classify a generated child.
+  return parseSessionMetaLines(
+    lines,
+    tail !== undefined && (skippedMiddle || !tailStartsAtLineBoundary) ? tailLineStart : 0,
+  );
 }
 
-async function readSessionMetaSample(
-  filePath: string,
-): Promise<{ head: string; tail?: string; tailStartsAtLineBoundary?: boolean }> {
+interface SessionMetaSample {
+  head: string;
+  tail?: string;
+  tailStartsAtLineBoundary?: boolean;
+  skippedMiddle?: boolean;
+}
+
+async function readSessionMetaSample(filePath: string): Promise<SessionMetaSample> {
   const stat = await fsp.stat(filePath);
   if (stat.size <= SESSION_META_CHUNK_BYTES) {
     return { head: await fsp.readFile(filePath, "utf8") };
@@ -184,17 +213,14 @@ async function readSessionMetaSample(
       head: headBuffer.slice(0, headBytes).toString("utf8"),
       tail: tailBuffer.slice(0, tailBytes).toString("utf8"),
       tailStartsAtLineBoundary,
+      skippedMiddle: tailStart > headBytes,
     };
   } finally {
     await handle.close().catch(() => {});
   }
 }
 
-function readSessionMetaSampleSync(filePath: string): {
-  head: string;
-  tail?: string;
-  tailStartsAtLineBoundary?: boolean;
-} {
+function readSessionMetaSampleSync(filePath: string): SessionMetaSample {
   const stat = fs.statSync(filePath);
   if (stat.size <= SESSION_META_CHUNK_BYTES) {
     return { head: fs.readFileSync(filePath, "utf8") };
@@ -215,6 +241,7 @@ function readSessionMetaSampleSync(filePath: string): {
       head: headBuffer.slice(0, headBytes).toString("utf8"),
       tail: tailBuffer.slice(0, tailBytes).toString("utf8"),
       tailStartsAtLineBoundary,
+      skippedMiddle: tailStart > headBytes,
     };
   } finally {
     fs.closeSync(fd);
@@ -223,8 +250,9 @@ function readSessionMetaSampleSync(filePath: string): {
 
 export async function extractSessionMetaAsync(filePath: string): Promise<ExtractedSessionMeta> {
   try {
-    const { head, tail, tailStartsAtLineBoundary } = await readSessionMetaSample(filePath);
-    return extractSessionMetaFromSample(head, tail, tailStartsAtLineBoundary);
+    const { head, tail, tailStartsAtLineBoundary, skippedMiddle } =
+      await readSessionMetaSample(filePath);
+    return extractSessionMetaFromSample(head, tail, tailStartsAtLineBoundary, skippedMiddle);
   } catch {
     return { preview: "", messageCount: 0, name: null, lastActiveAt: null };
   }
@@ -232,8 +260,9 @@ export async function extractSessionMetaAsync(filePath: string): Promise<Extract
 
 export function extractSessionMeta(filePath: string): ExtractedSessionMeta {
   try {
-    const { head, tail, tailStartsAtLineBoundary } = readSessionMetaSampleSync(filePath);
-    return extractSessionMetaFromSample(head, tail, tailStartsAtLineBoundary);
+    const { head, tail, tailStartsAtLineBoundary, skippedMiddle } =
+      readSessionMetaSampleSync(filePath);
+    return extractSessionMetaFromSample(head, tail, tailStartsAtLineBoundary, skippedMiddle);
   } catch {
     return { preview: "", messageCount: 0, name: null, lastActiveAt: null };
   }
@@ -365,7 +394,7 @@ export async function listSessionsForWorkspace(workspacePath: string): Promise<S
       // Check cache
       const cached = cache.get(filePath);
       if (cached && cached.mtime === mtime) {
-        return belongsToWorkspace(cached.summary.cwd) ? cached.summary : null;
+        return belongsToWorkspace(cached.summary.cwd) ? { ...cached.summary } : null;
       }
 
       const headerLine = await readFirstLineAsync(filePath);
@@ -380,12 +409,17 @@ export async function listSessionsForWorkspace(workspacePath: string): Promise<S
 
       if (!header.success) return null;
 
-      const { preview, messageCount, name, lastActiveAt } = await extractSessionMetaAsync(filePath);
+      const { preview, messageCount, name, nameIsAuthoritative, lastActiveAt } =
+        await extractSessionMetaAsync(filePath);
 
       const summary: SessionSummary = {
         filePath,
         id: header.data.id,
         ...(name ? { name } : {}),
+        ...(header.data.parentSession?.trim() ? { parentSession: header.data.parentSession } : {}),
+        ...(nameIsAuthoritative !== false && isSubagentSession(header.data, name)
+          ? { isSubagent: true }
+          : {}),
         mtime,
         ...(lastActiveAt !== null ? { lastActiveAt } : {}),
         preview,
@@ -396,7 +430,7 @@ export async function listSessionsForWorkspace(workspacePath: string): Promise<S
       // Cache entries for ALL workspaces, not just the one we are
       // enumerating. Without this, switching workspaces re-parses every
       // file from disk on each call.
-      cache.set(filePath, { mtime, summary });
+      cache.set(filePath, { mtime, summary: { ...summary } });
       return belongsToWorkspace(header.data.cwd) ? summary : null;
     },
   );

@@ -1,5 +1,7 @@
 import type { SessionId } from "@shared/ids.js";
 import type { SessionStatus } from "@shared/ipc-contract.js";
+import type { AppSettings } from "@shared/settings.js";
+import { isSubagentSession } from "@shared/subagent-sessions.js";
 import type React from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useExtensionUpdatesStore } from "../../stores/extension-updates-store.js";
@@ -16,14 +18,36 @@ import {
   IconArchive,
   IconChevronRight,
   IconClose,
+  IconFolder,
+  IconFolderPlus,
+  IconPencil,
   IconRestart,
   IconSearch,
 } from "../common/icons.js";
 import { openSessionSearch } from "../session-search/SessionSearchModal.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
+import { SessionGroupDialog } from "./SessionGroupDialog.js";
+import { moveSessionToGroup, partitionSessionGroups } from "./session-groups.js";
 import "./Sidebar.css";
 
 const VISIBLE_PAGE_SIZE = 30;
+
+type SidebarSessionEntry = {
+  name: string;
+  filePath: string | undefined;
+  sortKey: number;
+  isSubagent: boolean;
+} & ({ kind: "live"; sessionId: SessionId } | { kind: "stored"; filePath: string });
+
+interface PendingGroupEdit {
+  mode: "create" | "rename" | "move";
+  workspacePath: string;
+  groupId?: string | undefined;
+  filePath?: string | undefined;
+  name?: string | undefined;
+  sessionName?: string | undefined;
+  returnFocus: HTMLButtonElement;
+}
 
 interface PendingArchive {
   sessionId: SessionId | undefined;
@@ -136,6 +160,8 @@ export function Sidebar({
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const updateSettings = useSettingsStore((s) => s.update);
   const pinnedSessions = useSettingsStore((s) => s.settings.pinnedSessions);
+  const sessionGroups = useSettingsStore((s) => s.settings.sessionGroups);
+  const showSubagentSessions = useSettingsStore((s) => s.settings.showSubagentSessions);
   const lastActiveWorkspace = useSettingsStore((s) => s.settings.lastActiveWorkspace);
   const savedExpandedWorkspaces = useSettingsStore((s) => s.settings.expandedWorkspaces);
   const statusBarVisible = useSettingsStore((s) => s.settings.statusBarVisible);
@@ -147,11 +173,76 @@ export function Sidebar({
   const pinnedDragKeyRef = useRef<string | null>(null);
   const [pendingArchive, setPendingArchive] = useState<PendingArchive | null>(null);
   const [archiveInProgress, setArchiveInProgress] = useState(false);
+  const [pendingGroupEdit, setPendingGroupEdit] = useState<PendingGroupEdit | null>(null);
+  const [sidebarError, setSidebarError] = useState<string | null>(null);
   const [pendingRestart, setPendingRestart] = useState<{
     sessionId: SessionId;
     name: string;
     returnFocus: HTMLButtonElement;
   } | null>(null);
+
+  const persistSidebar = useCallback(
+    async (updates: Partial<AppSettings>): Promise<boolean> => {
+      setSidebarError(null);
+      try {
+        await updateSettings(updates);
+        return true;
+      } catch {
+        setSidebarError("Couldn’t save sidebar changes. Please try again.");
+        return false;
+      }
+    },
+    [updateSettings],
+  );
+
+  const saveGroupEdit = async (value: string): Promise<void> => {
+    if (!pendingGroupEdit) return;
+    const target = pendingGroupEdit;
+    const current = useSettingsStore.getState().settings.sessionGroups;
+    let next = current;
+    let destinationGroupId: string | null = value || null;
+    if (target.mode === "create") {
+      const group = {
+        id: crypto.randomUUID(),
+        workspacePath: target.workspacePath,
+        name: value,
+        sessionFiles: [],
+        collapsed: false,
+      };
+      next = [...current, group];
+      destinationGroupId = group.id;
+      if (target.filePath) {
+        next = moveSessionToGroup(next, target.workspacePath, target.filePath, group.id);
+      }
+    } else if (target.mode === "rename") {
+      if (!current.some((group) => group.id === target.groupId)) throw new Error("Missing group");
+      next = current.map((group) =>
+        group.id === target.groupId ? { ...group, name: value } : group,
+      );
+    } else if (target.filePath) {
+      next = moveSessionToGroup(current, target.workspacePath, target.filePath, value || null);
+      if (value && next === current) throw new Error("Missing group");
+    }
+    await updateSettings({ sessionGroups: next });
+    if (target.filePath && target.mode !== "rename") {
+      const section = partitionSessionGroups(
+        getUnifiedSessions(target.workspacePath),
+        next,
+        target.workspacePath,
+      ).find(({ group }) => (group?.id ?? null) === destinationGroupId);
+      const index = section?.entries.findIndex((entry) => entry.filePath === target.filePath) ?? -1;
+      if (index >= VISIBLE_PAGE_SIZE) {
+        const key = JSON.stringify([target.workspacePath, destinationGroupId]);
+        setVisibleCounts((previous) => ({
+          ...previous,
+          [key]: Math.max(
+            previous[key] ?? VISIBLE_PAGE_SIZE,
+            Math.ceil((index + 1) / VISIBLE_PAGE_SIZE) * VISIBLE_PAGE_SIZE,
+          ),
+        }));
+      }
+    }
+  };
 
   // Pinned sessions (by file path) as a Set for O(1) lookup during render.
   const pinnedSet = useMemo(() => new Set(pinnedSessions), [pinnedSessions]);
@@ -188,7 +279,8 @@ export function Sidebar({
     [pinnedSessions, updateSettings],
   );
 
-  // Pagination: visible count per workspace
+  // Pagination is per section: older grouped sessions must not disappear
+  // behind a workspace-wide page cut, nor spend a page budget while collapsed.
   const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
   const [workspaceListLoaded, setWorkspaceListLoaded] = useState(false);
 
@@ -219,6 +311,7 @@ export function Sidebar({
       // bumps its file mtime (pi appends a `session_info` entry) without any
       // real user work, which previously let a session you only glanced at
       // leapfrog one you actively worked in.
+      const summaryByFile = new Map((ws.sessions ?? []).map((s) => [s.filePath, s]));
       const mtimeByFile = new Map((ws.sessions ?? []).map((s) => [s.filePath, s.mtime]));
       const lastActiveByFile = new Map(
         (ws.sessions ?? [])
@@ -259,31 +352,24 @@ export function Sidebar({
       // (bumped on prompt submit) or file mtime — live sessions that
       // have never had a prompt submitted fall back to their file mtime
       // so clicking them doesn't reorder the list.
-      const merged: Array<
-        | {
-            kind: "live";
-            sessionId: SessionId;
-            name: string;
-            filePath: string | undefined;
-            sortKey: number;
-          }
-        | {
-            kind: "stored";
-            filePath: string;
-            name: string;
-            preview: string;
-            mtime: number;
-            messageCount: number;
-            sortKey: number;
-          }
-      > = [];
+      const merged: SidebarSessionEntry[] = [];
 
       for (const s of liveSessions) {
+        const summary = s.sessionFile ? summaryByFile.get(s.sessionFile) : undefined;
+        const hasPresentedName =
+          s.authorityProjection?.authoritativeSnapshot !== undefined ||
+          s.authorityProjection?.staleDiagnosticSnapshot !== undefined;
         merged.push({
           kind: "live",
           sessionId: s.sessionId,
           name: s.sessionName ?? s.sessionTitle ?? "Untitled session",
           filePath: s.sessionFile ?? undefined,
+          // The presented live name includes explicit clears. Before the first
+          // presentation baseline, require discovery's positive evidence rather
+          // than trusting a possibly stale name sampled from a large file.
+          isSubagent:
+            (hasPresentedName || summary?.isSubagent === true) &&
+            isSubagentSession(summary ?? {}, s.sessionName),
           sortKey:
             s.lastActivityAt ??
             (s.sessionFile ? lastActiveByFile.get(s.sessionFile) : undefined) ??
@@ -296,9 +382,7 @@ export function Sidebar({
           kind: "stored",
           filePath: s.filePath,
           name: s.name ?? s.preview ?? "Session",
-          preview: s.preview ?? "",
-          mtime: s.mtime,
-          messageCount: s.messageCount,
+          isSubagent: s.isSubagent === true,
           sortKey: s.lastActiveAt ?? s.mtime,
         });
       }
@@ -317,9 +401,16 @@ export function Sidebar({
         .map((key) => merged.find((e) => pinKey(e) === key))
         .filter((e): e is (typeof merged)[number] => e !== undefined);
       const unpinned = merged.filter((e) => !pinnedSet.has(pinKey(e)));
-      return [...pinned, ...unpinned];
+      return [...pinned, ...unpinned].filter(
+        (entry) =>
+          showSubagentSessions ||
+          !entry.isSubagent ||
+          // A session explicitly opened from search must remain navigable and
+          // selected even while other child rows are hidden.
+          (entry.kind === "live" && entry.sessionId === activeSessionId),
+      );
     },
-    [sessions, workspaces, activeSessionId, pinnedSessions, pinnedSet],
+    [sessions, workspaces, activeSessionId, pinnedSessions, pinnedSet, showSubagentSessions],
   );
 
   // (Sidebar resize is handled in App.tsx — the drag handle lives there so
@@ -519,9 +610,8 @@ export function Sidebar({
           const isActiveWs = activeWorkspacePath === ws.path;
           const isExpanded = expandedWorkspaces.includes(ws.path);
           const unifiedSessions = getUnifiedSessions(ws.path);
-          const visibleCount = getVisibleCount(ws.path);
-          const visibleSessions = unifiedSessions.slice(0, visibleCount);
-          const hasMore = unifiedSessions.length > visibleCount;
+          const sections = partitionSessionGroups(unifiedSessions, sessionGroups, ws.path);
+          const hasGroups = sections.some((section) => section.group !== null);
 
           return (
             <div
@@ -638,6 +728,21 @@ export function Sidebar({
                             </svg>
                             <span>New session</span>
                           </button>
+                          <button
+                            type="button"
+                            className="icon-btn sidebar__new-group"
+                            title="Create session group"
+                            aria-label={`Create session group in ${ws.path.split("/").pop() ?? ws.path}`}
+                            onClick={(event) =>
+                              setPendingGroupEdit({
+                                mode: "create",
+                                workspacePath: ws.path,
+                                returnFocus: event.currentTarget,
+                              })
+                            }
+                          >
+                            <IconFolderPlus />
+                          </button>
                           {isNewButtonSelected && activeSessionId && (
                             <button
                               type="button"
@@ -656,213 +761,410 @@ export function Sidebar({
                           )}
                         </div>
 
-                        {/* Unified session list (live + stored, paginated) */}
-                        {visibleSessions.map((entry) => {
-                          if (entry.kind === "live") {
-                            const liveSession = sessions.get(entry.sessionId);
-                            const isPinned =
-                              entry.filePath != null && pinnedSet.has(entry.filePath);
-                            return (
-                              <div
-                                key={entry.sessionId}
-                                role="button"
-                                tabIndex={0}
-                                className={`sidebar__session fade-scope ${activeSessionId === entry.sessionId ? "sidebar__session--active" : ""} ${isPinned ? "sidebar__session--pinned" : ""}`}
-                                draggable={isPinned}
-                                onDragStart={
-                                  isPinned && entry.filePath
-                                    ? (e) => {
-                                        pinnedDragKeyRef.current = entry.filePath!;
-                                        e.dataTransfer.effectAllowed = "move";
-                                      }
-                                    : undefined
-                                }
-                                onDragOver={
-                                  isPinned
-                                    ? (e) => {
-                                        e.preventDefault();
-                                        e.dataTransfer.dropEffect = "move";
-                                      }
-                                    : undefined
-                                }
-                                onDrop={
-                                  isPinned && entry.filePath
-                                    ? (e) => {
-                                        e.preventDefault();
-                                        handlePinnedDrop(entry.filePath!);
-                                      }
-                                    : undefined
-                                }
-                                onDragEnd={
-                                  isPinned
-                                    ? () => {
-                                        pinnedDragKeyRef.current = null;
-                                      }
-                                    : undefined
-                                }
-                                onClick={() => handleSelectLiveSession(entry.sessionId, ws.path)}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter" || e.key === " ") {
-                                    e.preventDefault();
-                                    handleSelectLiveSession(entry.sessionId, ws.path);
-                                  }
-                                }}
-                              >
-                                {shouldShowWorkingIndicator(liveSession) ? (
-                                  <WorkingIndicator />
-                                ) : (
-                                  <StatusDot
-                                    status={liveSession?.status ?? "cold"}
-                                    hasPendingDialog={(liveSession?.pendingDialogs.length ?? 0) > 0}
-                                    unreadStatus={liveSession?.unreadStatus}
-                                  />
-                                )}
-                                <FadeText className="sidebar__session-name">{entry.name}</FadeText>
-                                <button
-                                  type="button"
-                                  className="sidebar__session-restart"
-                                  title="Force restart host"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setPendingRestart({
-                                      sessionId: entry.sessionId,
-                                      name: entry.name,
-                                      returnFocus: e.currentTarget,
-                                    });
-                                  }}
-                                  onKeyDown={(e) => e.stopPropagation()}
-                                >
-                                  <IconRestart />
-                                </button>
-                                <button
-                                  type="button"
-                                  className="sidebar__session-archive"
-                                  title="Archive session"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setPendingArchive({
-                                      sessionId: entry.sessionId,
-                                      filePath: entry.filePath ?? "",
-                                      workspacePath: ws.path,
-                                      name: entry.name,
-                                      returnFocus: e.currentTarget,
-                                      fallbackFocus: archiveFocusFallback(e.currentTarget),
-                                    });
-                                  }}
-                                  onKeyDown={(e) => e.stopPropagation()}
-                                >
-                                  <IconArchive />
-                                </button>
-                                {entry.filePath && (
-                                  <button
-                                    type="button"
-                                    className="sidebar__session-pin"
-                                    title={isPinned ? "Unpin session" : "Pin session"}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      togglePin(entry.filePath!);
-                                    }}
-                                  >
-                                    <PinIcon filled={isPinned} />
-                                  </button>
-                                )}
-                              </div>
-                            );
-                          }
-
-                          // Stored session row
-                          const isPinned = entry.filePath != null && pinnedSet.has(entry.filePath);
+                        {/* Grouping is a projection of the deduped live/stored list. */}
+                        {sections.map(({ group, entries }) => {
+                          const sectionKey = JSON.stringify([ws.path, group?.id ?? null]);
+                          const activeIndex = entries.findIndex(
+                            (entry) => entry.kind === "live" && entry.sessionId === activeSessionId,
+                          );
+                          // Explicit activation (including from search) must not
+                          // leave its row behind a page cut. Keep ordering and
+                          // deliberate group/workspace collapse states unchanged.
+                          const visibleCount = Math.max(
+                            getVisibleCount(sectionKey),
+                            Math.ceil((activeIndex + 1) / VISIBLE_PAGE_SIZE) * VISIBLE_PAGE_SIZE,
+                          );
+                          const visibleSessions = entries.slice(0, visibleCount);
+                          const hasMore = entries.length > visibleCount;
                           return (
                             <div
-                              key={entry.filePath}
-                              role="button"
-                              tabIndex={0}
-                              className={`sidebar__session fade-scope ${isPinned ? "sidebar__session--pinned" : ""}`}
-                              draggable={isPinned}
-                              onDragStart={
-                                isPinned
-                                  ? (e) => {
-                                      pinnedDragKeyRef.current = entry.filePath;
-                                      e.dataTransfer.effectAllowed = "move";
-                                    }
-                                  : undefined
-                              }
-                              onDragOver={
-                                isPinned
-                                  ? (e) => {
-                                      e.preventDefault();
-                                      e.dataTransfer.dropEffect = "move";
-                                    }
-                                  : undefined
-                              }
-                              onDrop={
-                                isPinned
-                                  ? (e) => {
-                                      e.preventDefault();
-                                      handlePinnedDrop(entry.filePath);
-                                    }
-                                  : undefined
-                              }
-                              onDragEnd={
-                                isPinned
-                                  ? () => {
-                                      pinnedDragKeyRef.current = null;
-                                    }
-                                  : undefined
-                              }
-                              onClick={() => handleResumeSession(ws.path, entry.filePath)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" || e.key === " ") {
-                                  e.preventDefault();
-                                  handleResumeSession(ws.path, entry.filePath);
-                                }
-                              }}
+                              key={sectionKey}
+                              className="sidebar__session-group"
+                              data-session-group-id={group?.id}
+                              role={group ? "group" : undefined}
+                              aria-label={group?.name}
                             >
-                              <span className="status-dot status-dot--cold" title="Not running" />
-                              <FadeText className="sidebar__session-name">{entry.name}</FadeText>
-                              <button
-                                type="button"
-                                className="sidebar__session-archive"
-                                title="Archive session"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setPendingArchive({
-                                    sessionId: undefined,
-                                    filePath: entry.filePath,
-                                    workspacePath: ws.path,
-                                    name: entry.name,
-                                    returnFocus: e.currentTarget,
-                                    fallbackFocus: archiveFocusFallback(e.currentTarget),
-                                  });
-                                }}
-                                onKeyDown={(e) => e.stopPropagation()}
+                              {group ? (
+                                <div className="sidebar__group-header">
+                                  <button
+                                    type="button"
+                                    className="sidebar__group-toggle fade-scope"
+                                    aria-label={`${group.collapsed ? "Expand" : "Collapse"} group ${group.name}`}
+                                    aria-expanded={!group.collapsed}
+                                    aria-controls={`session-group-${group.id}`}
+                                    onClick={() => {
+                                      const current =
+                                        useSettingsStore.getState().settings.sessionGroups;
+                                      void persistSidebar({
+                                        sessionGroups: current.map((item) =>
+                                          item.id === group.id
+                                            ? { ...item, collapsed: !item.collapsed }
+                                            : item,
+                                        ),
+                                      });
+                                    }}
+                                  >
+                                    <IconChevronRight
+                                      className={
+                                        group.collapsed ? "" : "sidebar__group-chevron--expanded"
+                                      }
+                                    />
+                                    <FadeText className="sidebar__group-name">
+                                      {group.name}
+                                    </FadeText>
+                                    <span className="sidebar__group-count" aria-hidden="true">
+                                      {entries.length}
+                                    </span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="icon-btn sidebar__group-action"
+                                    title="Rename group"
+                                    aria-label={`Rename group ${group.name}`}
+                                    onClick={(event) =>
+                                      setPendingGroupEdit({
+                                        mode: "rename",
+                                        workspacePath: ws.path,
+                                        groupId: group.id,
+                                        name: group.name,
+                                        returnFocus: event.currentTarget,
+                                      })
+                                    }
+                                  >
+                                    <IconPencil />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="icon-btn sidebar__group-action"
+                                    title="Remove group (keep sessions)"
+                                    aria-label={`Remove group ${group.name} (keep sessions)`}
+                                    onClick={(event) => {
+                                      const workspace =
+                                        event.currentTarget.closest(".sidebar__workspace");
+                                      const current =
+                                        useSettingsStore.getState().settings.sessionGroups;
+                                      void persistSidebar({
+                                        sessionGroups: current.filter(
+                                          (item) => item.id !== group.id,
+                                        ),
+                                      }).then((saved) => {
+                                        const restore = (): void => {
+                                          // Optimistic removal unmounts the old
+                                          // header; rollback creates a new node.
+                                          const restoredGroup = Array.from(
+                                            workspace?.querySelectorAll<HTMLElement>(
+                                              "[data-session-group-id]",
+                                            ) ?? [],
+                                          ).find(
+                                            (element) =>
+                                              element.dataset.sessionGroupId === group.id,
+                                          );
+                                          const target = saved
+                                            ? workspace?.querySelector<HTMLElement>(
+                                                ".sidebar__new-group",
+                                              )
+                                            : restoredGroup?.querySelector<HTMLElement>(
+                                                ".sidebar__group-toggle",
+                                              );
+                                          target?.focus();
+                                        };
+                                        if (typeof requestAnimationFrame === "function")
+                                          requestAnimationFrame(restore);
+                                        else queueMicrotask(restore);
+                                      });
+                                    }}
+                                  >
+                                    <IconClose />
+                                  </button>
+                                </div>
+                              ) : hasGroups ? (
+                                <div className="sidebar__ungrouped-label">Ungrouped</div>
+                              ) : null}
+                              <div
+                                id={group ? `session-group-${group.id}` : undefined}
+                                hidden={group?.collapsed}
                               >
-                                <IconArchive />
-                              </button>
-                              <button
-                                type="button"
-                                className="sidebar__session-pin"
-                                title={isPinned ? "Unpin session" : "Pin session"}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  togglePin(entry.filePath);
-                                }}
-                              >
-                                <PinIcon filled={isPinned} />
-                              </button>
+                                {!group?.collapsed && (
+                                  <>
+                                    {visibleSessions.map((entry) => {
+                                      if (entry.kind === "live") {
+                                        const liveSession = sessions.get(entry.sessionId);
+                                        const isPinned =
+                                          entry.filePath != null && pinnedSet.has(entry.filePath);
+                                        return (
+                                          <div
+                                            key={entry.sessionId}
+                                            data-session-file={entry.filePath}
+                                            role="button"
+                                            tabIndex={0}
+                                            className={`sidebar__session fade-scope ${activeSessionId === entry.sessionId ? "sidebar__session--active" : ""} ${isPinned ? "sidebar__session--pinned" : ""}`}
+                                            draggable={isPinned}
+                                            onDragStart={
+                                              isPinned && entry.filePath
+                                                ? (e) => {
+                                                    pinnedDragKeyRef.current = entry.filePath!;
+                                                    e.dataTransfer.effectAllowed = "move";
+                                                  }
+                                                : undefined
+                                            }
+                                            onDragOver={
+                                              isPinned
+                                                ? (e) => {
+                                                    e.preventDefault();
+                                                    e.dataTransfer.dropEffect = "move";
+                                                  }
+                                                : undefined
+                                            }
+                                            onDrop={
+                                              isPinned && entry.filePath
+                                                ? (e) => {
+                                                    e.preventDefault();
+                                                    handlePinnedDrop(entry.filePath!);
+                                                  }
+                                                : undefined
+                                            }
+                                            onDragEnd={
+                                              isPinned
+                                                ? () => {
+                                                    pinnedDragKeyRef.current = null;
+                                                  }
+                                                : undefined
+                                            }
+                                            onClick={() =>
+                                              handleSelectLiveSession(entry.sessionId, ws.path)
+                                            }
+                                            onKeyDown={(e) => {
+                                              if (e.target !== e.currentTarget) return;
+                                              if (e.key === "Enter" || e.key === " ") {
+                                                e.preventDefault();
+                                                handleSelectLiveSession(entry.sessionId, ws.path);
+                                              }
+                                            }}
+                                          >
+                                            {shouldShowWorkingIndicator(liveSession) ? (
+                                              <WorkingIndicator />
+                                            ) : (
+                                              <StatusDot
+                                                status={liveSession?.status ?? "cold"}
+                                                hasPendingDialog={
+                                                  (liveSession?.pendingDialogs.length ?? 0) > 0
+                                                }
+                                                unreadStatus={liveSession?.unreadStatus}
+                                              />
+                                            )}
+                                            <FadeText className="sidebar__session-name">
+                                              {entry.name}
+                                            </FadeText>
+                                            {entry.filePath && (
+                                              <button
+                                                type="button"
+                                                className="sidebar__session-group-move"
+                                                title="Move session to group"
+                                                onClick={(event) => {
+                                                  event.stopPropagation();
+                                                  setPendingGroupEdit({
+                                                    mode: "move",
+                                                    workspacePath: ws.path,
+                                                    filePath: entry.filePath,
+                                                    sessionName: entry.name,
+                                                    groupId: group?.id,
+                                                    returnFocus: event.currentTarget,
+                                                  });
+                                                }}
+                                                onKeyDown={(event) => event.stopPropagation()}
+                                              >
+                                                <IconFolder />
+                                              </button>
+                                            )}
+                                            <button
+                                              type="button"
+                                              className="sidebar__session-restart"
+                                              title="Force restart host"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setPendingRestart({
+                                                  sessionId: entry.sessionId,
+                                                  name: entry.name,
+                                                  returnFocus: e.currentTarget,
+                                                });
+                                              }}
+                                              onKeyDown={(e) => e.stopPropagation()}
+                                            >
+                                              <IconRestart />
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="sidebar__session-archive"
+                                              title="Archive session"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setPendingArchive({
+                                                  sessionId: entry.sessionId,
+                                                  filePath: entry.filePath ?? "",
+                                                  workspacePath: ws.path,
+                                                  name: entry.name,
+                                                  returnFocus: e.currentTarget,
+                                                  fallbackFocus: archiveFocusFallback(
+                                                    e.currentTarget,
+                                                  ),
+                                                });
+                                              }}
+                                              onKeyDown={(e) => e.stopPropagation()}
+                                            >
+                                              <IconArchive />
+                                            </button>
+                                            {entry.filePath && (
+                                              <button
+                                                type="button"
+                                                className="sidebar__session-pin"
+                                                title={isPinned ? "Unpin session" : "Pin session"}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  togglePin(entry.filePath!);
+                                                }}
+                                              >
+                                                <PinIcon filled={isPinned} />
+                                              </button>
+                                            )}
+                                          </div>
+                                        );
+                                      }
+
+                                      // Stored session row
+                                      const isPinned =
+                                        entry.filePath != null && pinnedSet.has(entry.filePath);
+                                      return (
+                                        <div
+                                          key={entry.filePath}
+                                          data-session-file={entry.filePath}
+                                          role="button"
+                                          tabIndex={0}
+                                          className={`sidebar__session fade-scope ${isPinned ? "sidebar__session--pinned" : ""}`}
+                                          draggable={isPinned}
+                                          onDragStart={
+                                            isPinned
+                                              ? (e) => {
+                                                  pinnedDragKeyRef.current = entry.filePath;
+                                                  e.dataTransfer.effectAllowed = "move";
+                                                }
+                                              : undefined
+                                          }
+                                          onDragOver={
+                                            isPinned
+                                              ? (e) => {
+                                                  e.preventDefault();
+                                                  e.dataTransfer.dropEffect = "move";
+                                                }
+                                              : undefined
+                                          }
+                                          onDrop={
+                                            isPinned
+                                              ? (e) => {
+                                                  e.preventDefault();
+                                                  handlePinnedDrop(entry.filePath);
+                                                }
+                                              : undefined
+                                          }
+                                          onDragEnd={
+                                            isPinned
+                                              ? () => {
+                                                  pinnedDragKeyRef.current = null;
+                                                }
+                                              : undefined
+                                          }
+                                          onClick={() =>
+                                            handleResumeSession(ws.path, entry.filePath)
+                                          }
+                                          onKeyDown={(e) => {
+                                            if (e.target !== e.currentTarget) return;
+                                            if (e.key === "Enter" || e.key === " ") {
+                                              e.preventDefault();
+                                              handleResumeSession(ws.path, entry.filePath);
+                                            }
+                                          }}
+                                        >
+                                          <span
+                                            className="status-dot status-dot--cold"
+                                            title="Not running"
+                                          />
+                                          <FadeText className="sidebar__session-name">
+                                            {entry.name}
+                                          </FadeText>
+                                          <button
+                                            type="button"
+                                            className="sidebar__session-group-move"
+                                            title="Move session to group"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              setPendingGroupEdit({
+                                                mode: "move",
+                                                workspacePath: ws.path,
+                                                filePath: entry.filePath,
+                                                sessionName: entry.name,
+                                                groupId: group?.id,
+                                                returnFocus: event.currentTarget,
+                                              });
+                                            }}
+                                            onKeyDown={(event) => event.stopPropagation()}
+                                          >
+                                            <IconFolder />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="sidebar__session-archive"
+                                            title="Archive session"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setPendingArchive({
+                                                sessionId: undefined,
+                                                filePath: entry.filePath,
+                                                workspacePath: ws.path,
+                                                name: entry.name,
+                                                returnFocus: e.currentTarget,
+                                                fallbackFocus: archiveFocusFallback(
+                                                  e.currentTarget,
+                                                ),
+                                              });
+                                            }}
+                                            onKeyDown={(e) => e.stopPropagation()}
+                                          >
+                                            <IconArchive />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="sidebar__session-pin"
+                                            title={isPinned ? "Unpin session" : "Pin session"}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              togglePin(entry.filePath);
+                                            }}
+                                          >
+                                            <PinIcon filled={isPinned} />
+                                          </button>
+                                        </div>
+                                      );
+                                    })}
+
+                                    {hasMore && (
+                                      <button
+                                        type="button"
+                                        className="sidebar__show-more"
+                                        onClick={() => handleShowMore(sectionKey)}
+                                      >
+                                        + Show more ({entries.length - visibleCount} remaining)
+                                      </button>
+                                    )}
+                                    {group && entries.length === 0 && (
+                                      <div className="sidebar__group-empty">
+                                        No sessions in this group
+                                      </div>
+                                    )}
+                                  </>
+                                )}
+                              </div>
                             </div>
                           );
                         })}
-
-                        {hasMore && (
-                          <button
-                            type="button"
-                            className="sidebar__show-more"
-                            onClick={() => handleShowMore(ws.path)}
-                          >
-                            + Show more ({unifiedSessions.length - visibleCount} remaining)
-                          </button>
-                        )}
                       </>
                     );
                   })()}
@@ -873,6 +1175,11 @@ export function Sidebar({
         })}
       </div>
 
+      {sidebarError && (
+        <p className="sidebar__error" role="alert">
+          {sidebarError}
+        </p>
+      )}
       <div className="sidebar__footer">
         <button type="button" className="sidebar__add-workspace" onClick={handleAddWorkspace}>
           <svg className="sidebar__add-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -922,6 +1229,42 @@ export function Sidebar({
         </button>
       </div>
 
+      {pendingGroupEdit && (
+        <SessionGroupDialog
+          key={`${pendingGroupEdit.mode}:${pendingGroupEdit.groupId ?? ""}`}
+          mode={pendingGroupEdit.mode}
+          initialValue={
+            pendingGroupEdit.mode === "move"
+              ? (pendingGroupEdit.groupId ?? "")
+              : (pendingGroupEdit.name ?? "")
+          }
+          groups={sessionGroups.filter(
+            (group) => group.workspacePath === pendingGroupEdit.workspacePath,
+          )}
+          subject={pendingGroupEdit.sessionName}
+          returnFocus={pendingGroupEdit.returnFocus}
+          fallbackFocus={() => {
+            const rows = sidebarRef.current?.querySelectorAll<HTMLElement>(".sidebar__session");
+            return (
+              Array.from(rows ?? []).find(
+                (row) => row.dataset.sessionFile === pendingGroupEdit.filePath,
+              ) ??
+              sidebarRef.current?.querySelector<HTMLButtonElement>(".sidebar__new-group") ??
+              null
+            );
+          }}
+          onSave={saveGroupEdit}
+          onClose={() => setPendingGroupEdit(null)}
+          onCreate={() =>
+            setPendingGroupEdit({
+              ...pendingGroupEdit,
+              mode: "create",
+              groupId: undefined,
+              name: "",
+            })
+          }
+        />
+      )}
       {pendingRestart && (
         <ConfirmDialog
           title="Force restart host?"

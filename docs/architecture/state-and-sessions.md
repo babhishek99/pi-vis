@@ -119,6 +119,18 @@ Workspace search is persisted-history-only and is not a second runtime authority
 
 Only explicit result opening enters normal stored-session opening and its activation-visit lifecycle. There remains no fixed active-host cap or generalized idle/LRU policy; search cannot reap a pre-existing host. See [workspace session search](session-search.md).
 
+## Persisted sidebar metadata
+
+`workspace.listSessions` returns complete discovery results, including optional
+`parentSession` and conservative `isSubagent` presentation hints from saved
+headers/names. These are not runtime identities, liveness, or proof that a session
+is a child from lineage alone: ordinary forks/clones also have parents. The
+renderer applies the visibility preference only to its sidebar projection; search
+and saved history remain available. Discovery cache summaries are copied before
+return, so caller mutation cannot change future classifications. Settings-only
+`sessionGroups` never enter the runtime authority or session JSONL. See
+[sidebar organization](sidebar-shell-layout.md#session-groups-and-sub-agent-visibility).
+
 ## History and transcript
 
 Semantic session replacements publish their committed main-owned transport

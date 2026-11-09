@@ -8,6 +8,8 @@ export const SessionHeaderSchema = z
     id: z.string(),
     timestamp: z.string().or(z.number()),
     cwd: z.string(),
+    // Optional lineage must not make an otherwise valid saved session unreadable.
+    parentSession: z.string().optional().catch(undefined),
     model: z.string().optional(),
   })
   .passthrough();

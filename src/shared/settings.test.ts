@@ -18,6 +18,8 @@ describe("AppSettingsSchema", () => {
     expect(parsed.transcriptStyle).toBe("verbose");
     expect(parsed.groupModelsByProvider).toBe(false);
     expect(parsed.sessionSearchEnabled).toBe(true);
+    expect(parsed.showSubagentSessions).toBe(false);
+    expect(parsed.sessionGroups).toEqual([]);
     expect(parsed.fonts.display).toEqual({ sizePx: 14 });
     expect(parsed.fonts.code).toEqual({ family: "IBM Plex Mono", sizePx: 14 });
     expect(parsed.fonts.title).toEqual({ family: "Fraunces" });
@@ -141,6 +143,37 @@ describe("AppSettingsSchema", () => {
     if (!result.success) return;
     expect(result.data.workspaceOrder).toEqual(["/repo-a", "/repo-b"]);
     expect(result.data.expandedWorkspaces).toEqual(["/repo-a"]);
+  });
+
+  it("persists sidebar groups, collapse state, and the sub-agent visibility choice", () => {
+    const input = {
+      showSubagentSessions: true,
+      sessionGroups: [
+        {
+          id: "research",
+          workspacePath: "/repo",
+          name: " Research ",
+          sessionFiles: ["/sessions/a.jsonl"],
+          collapsed: true,
+        },
+      ],
+    };
+    const parsed = AppSettingsSchema.parse(input);
+    expect(parsed.showSubagentSessions).toBe(true);
+    expect(parsed.sessionGroups).toEqual([{ ...input.sessionGroups[0], name: "Research" }]);
+    expect(AppSettingsSchema.parse(JSON.parse(JSON.stringify(parsed)))).toEqual(parsed);
+  });
+
+  it("validates group names and supplies defaults for new groups", () => {
+    const group = { id: "a", workspacePath: "/repo", name: "Work" };
+    expect(AppSettingsSchema.parse({ sessionGroups: [group] }).sessionGroups).toEqual([
+      { ...group, sessionFiles: [], collapsed: false },
+    ]);
+    for (const name of ["", "   ", "x".repeat(81)]) {
+      expect(AppSettingsSchema.safeParse({ sessionGroups: [{ ...group, name }] }).success).toBe(
+        false,
+      );
+    }
   });
 
   it("round-trips display preferences", () => {

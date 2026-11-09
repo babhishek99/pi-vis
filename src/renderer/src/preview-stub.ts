@@ -14,6 +14,7 @@ import type {
   SessionQuery,
 } from "@shared/pi-protocol/runtime-state.js";
 import type { SearchId, SearchTargetId, SessionSearchResult } from "@shared/session-search.js";
+import type { SessionGroup } from "@shared/settings.js";
 /**
  * Stubs window.pivis for standalone browser preview (not running in Electron).
  *
@@ -1670,6 +1671,8 @@ const settingsState = {
   sessionSearchEnabled: true,
   extensionUpdateCheckEnabled: true,
   pinnedSessions: [] as string[],
+  sessionGroups: [] as SessionGroup[],
+  showSubagentSessions: false,
   archivedSessions: [] as string[],
   worktrees: {},
   sessionWorktrees: {},

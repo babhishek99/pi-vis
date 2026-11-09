@@ -17,6 +17,7 @@ Load only the documentation relevant to the change.
   `docs/important-paths.md`, and `docs/testing.md`.
 - Tests, fault injection, fixtures, or verification: `docs/testing.md`.
 - Paths and persisted locations: `docs/important-paths.md`.
+- Personal fork iteration, isolated development profiles, or future gateway-cost integration: `docs/personal-fork.md`; sidebar behavior also requires `docs/architecture/sidebar-shell-layout.md`.
 - Workspace saved-session search, its worker/index, result context, or search UI: `docs/architecture/session-search.md`, `docs/decisions/0002-workspace-session-search.md`, `docs/architecture/sidebar-shell-layout.md`, and `docs/ui-conventions.md`; also read `docs/testing.md` for corpus and gates.
 - Release automation, final-app packaging gates, signing, notarization, or
   publication: `docs/releasing.md`, `RELEASING.md`, `docs/testing.md`, and the

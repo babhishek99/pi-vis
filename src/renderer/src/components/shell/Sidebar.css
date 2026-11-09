@@ -247,6 +247,102 @@
   text-align: left;
 }
 
+.sidebar__new-group {
+  flex: 0 0 auto;
+  margin-right: var(--space-2);
+  color: var(--text-ghost);
+}
+
+.sidebar__new-group:is(:hover, :focus-visible) {
+  color: var(--accent);
+}
+
+.sidebar__session-group + .sidebar__session-group {
+  margin-top: var(--space-2);
+}
+
+.sidebar__group-header {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-3);
+}
+
+.sidebar__group-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-2) 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  font-size: 0.786em;
+}
+
+.sidebar__group-toggle:is(:hover, :focus-visible) {
+  color: var(--text);
+}
+
+.sidebar__group-toggle > .icon {
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+
+.sidebar__group-chevron--expanded {
+  transform: rotate(90deg);
+}
+
+.sidebar__group-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar__group-count {
+  color: var(--text-ghost);
+  font-variant-numeric: tabular-nums;
+}
+
+.sidebar__group-header .sidebar__group-action {
+  width: 0;
+  padding: 0;
+  opacity: 0;
+  overflow: hidden;
+  color: var(--text-ghost);
+}
+
+.sidebar__group-header:is(:hover, :has(:focus-visible)) .sidebar__group-action {
+  width: 1.714rem;
+  opacity: 1;
+}
+
+.sidebar__group-action:is(:hover, :focus-visible) {
+  color: var(--text);
+}
+
+.sidebar__group-empty,
+.sidebar__ungrouped-label {
+  padding: var(--space-2) var(--space-3) var(--space-2) 1rem;
+  color: var(--text-ghost);
+  font-size: 0.786em;
+}
+
+.sidebar__group-empty {
+  font-style: italic;
+}
+
+.sidebar__error {
+  margin: 0;
+  padding: var(--space-3);
+  color: var(--danger);
+  font-size: 0.786em;
+}
+
 .sidebar__sessions {
   /* Left padding insets the session rows from the sidebar edge so the
      hover/active highlight reads as a rounded "pill" floating inside the
@@ -337,6 +433,7 @@
    re-fades to the reduced width as the buttons appear. */
 .sidebar__session-restart,
 .sidebar__session-archive,
+.sidebar__session-group-move,
 .sidebar__session-pin {
   display: inline-flex;
   align-items: center;
@@ -357,6 +454,7 @@
 
 .sidebar__session:is(:hover, :has(:focus-visible)) .sidebar__session-restart,
 .sidebar__session:is(:hover, :has(:focus-visible)) .sidebar__session-archive,
+.sidebar__session:is(:hover, :has(:focus-visible)) .sidebar__session-group-move,
 .sidebar__session:is(:hover, :has(:focus-visible)) .sidebar__session-pin,
 .sidebar__session--pinned .sidebar__session-pin {
   width: 1.429rem;
@@ -365,7 +463,8 @@
 }
 
 .sidebar__session-restart,
-.sidebar__session-archive {
+.sidebar__session-archive,
+.sidebar__session-group-move {
   font-size: 0.929em;
   transition: width 0.12s ease, margin 0.12s ease, opacity 0.12s ease, background 0.1s, color 0.1s;
 }
@@ -374,8 +473,13 @@
   background: var(--surface-3);
   color: var(--danger);
 }
+.sidebar__session-group-move:is(:hover, :focus-visible) {
+  background: var(--surface-3);
+  color: var(--accent);
+}
 .sidebar__session-restart svg,
-.sidebar__session-archive svg {
+.sidebar__session-archive svg,
+.sidebar__session-group-move svg {
   width: 0.95em;
   height: 0.95em;
   display: block;

@@ -980,6 +980,22 @@ export function SettingsView({ onClose, initialSection }: SettingsViewProps): Re
                 </button>
               </div>
               <div className="settings-row">
+                <span className="settings-label">Show sub-agent sessions</span>
+                <button
+                  type="button"
+                  className={`settings-toggle ${settings.showSubagentSessions ? "settings-toggle--on" : "settings-toggle--off"}`}
+                  onClick={() => update({ showSubagentSessions: !settings.showSubagentSessions })}
+                  aria-label="Show sub-agent sessions"
+                  aria-describedby="subagent-session-visibility-hint"
+                  aria-pressed={settings.showSubagentSessions}
+                >
+                  <span className="settings-toggle__knob" />
+                </button>
+                <span className="settings-hint" id="subagent-session-visibility-hint">
+                  Sidebar only. Running agents and saved history are unchanged.
+                </span>
+              </div>
+              <div className="settings-row">
                 <span className="settings-label">Saved session search</span>
                 <button
                   type="button"
