@@ -89,11 +89,9 @@ test("user-input dialogs and custom panels are yellow even while their requestin
       });
       expect(colors.actual).toBe(colors.warning);
       expect(colors.actual).not.toBe(colors.accent);
-      await page
-        .locator(".sidebar")
-        .screenshot({
-          path: test.info().outputPath(`sidebar-input-${surface}-${colorScheme}.png`),
-        });
+      await page.locator(".sidebar").screenshot({
+        path: test.info().outputPath(`sidebar-input-${surface}-${colorScheme}.png`),
+      });
     }
 
     await page.evaluate((waitingId) => {
