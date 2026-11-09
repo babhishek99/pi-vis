@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import type { SessionId } from "@shared/ids.js";
 import type { SessionSummary } from "@shared/ipc-contract.js";
+import type { InputUiRequest } from "@shared/pi-protocol/extension-ui.js";
 import { AppSettingsSchema, defaultSettings } from "@shared/settings.js";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as sessionStore from "../../stores/sessions-store.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { Sidebar } from "./Sidebar.js";
@@ -128,6 +130,58 @@ afterEach(() => {
 });
 
 describe("sidebar session organization", () => {
+  it.each(["dialog", "panel"] as const)(
+    "prioritizes user input over a still-working tool (%s)",
+    async (surface) => {
+      vi.spyOn(sessionStore, "shouldShowWorkingIndicator").mockReturnValue(true);
+      const saved = summary("Waiting for input");
+      const id = "input-wait" as SessionId;
+      useSessionsStore.getState().createSession(id, WS, saved.filePath, saved.name);
+      const session = useSessionsStore.getState().sessions.get(id)!;
+      const request: InputUiRequest = {
+        type: "extension_ui_request",
+        id: "input-1",
+        method: "input",
+        title: "Your answer?",
+      };
+      useSessionsStore.setState({
+        sessions: new Map([
+          [
+            id,
+            {
+              ...session,
+              hasTreeHistory: true,
+              pendingDialogs: surface === "dialog" ? [request] : [],
+              panel:
+                surface === "panel"
+                  ? {
+                      id: 1,
+                      overlay: true,
+                      hostInstanceId: "input-host",
+                      sessionEpoch: 1,
+                      buffer: [],
+                    }
+                  : undefined,
+            },
+          ],
+        ]),
+      });
+      await mount([saved]);
+      expect(
+        row(saved.filePath).querySelector(".status-dot--attention")?.getAttribute("title"),
+      ).toBe("Needs attention");
+      expect(row(saved.filePath).querySelector(".status-dot--streaming")).toBeNull();
+
+      await act(async () => {
+        useSessionsStore.setState({
+          sessions: new Map([[id, { ...session, hasTreeHistory: true }]]),
+        });
+      });
+      expect(row(saved.filePath).querySelector(".status-dot--attention")).toBeNull();
+      expect(row(saved.filePath).querySelector(".status-dot--streaming")).not.toBeNull();
+    },
+  );
+
   it("hides discovered children by default but leaves normal forks and an explicitly active child visible", async () => {
     const child = summary("Explore#1234abcd", { isSubagent: true, parentSession: "/parent.jsonl" });
     const active = summary("general-purpose#abcdef12", {

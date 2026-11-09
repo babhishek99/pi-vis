@@ -1,5 +1,5 @@
 import type { SessionId } from "@shared/ids.js";
-import type { IpcInvokeContract } from "@shared/ipc-contract.js";
+import type { IpcInvokeContract, SessionSummary } from "@shared/ipc-contract.js";
 import type { ExtensionUiRequest } from "@shared/pi-protocol/extension-ui.js";
 import type {
   AgentSessionSnapshot,
@@ -30,6 +30,31 @@ const DEMO_SESSION_ID = "demo-session-1" as SessionId;
 const DEMO_WORKSPACE = "/Users/demo/src/pi-vis";
 const DEMO_MODEL = "deepseek/deepseek-v4-flash";
 const DEMO_NON_REASONING_MODEL = "claude-fable-5";
+
+// Opt-in manual test drive; these are synthetic paths, never filesystem reads.
+const sidebarDemoEnabled = new URLSearchParams(window.location.search).get("sidebarDemo") === "1";
+const sidebarDemoSessions: SessionSummary[] = [
+  { id: "planning", filePath: "/preview/planning.jsonl", name: "Project planning" },
+  {
+    id: "fork",
+    filePath: "/preview/fork.jsonl",
+    name: "Ordinary fork",
+    parentSession: "/preview/planning.jsonl",
+  },
+  {
+    id: "child",
+    filePath: "/preview/child.jsonl",
+    name: "Explore#1234abcd",
+    parentSession: "/preview/planning.jsonl",
+    isSubagent: true,
+  },
+].map((session) => ({
+  ...session,
+  cwd: DEMO_WORKSPACE,
+  preview: "Synthetic preview conversation",
+  mtime: 1,
+  messageCount: 1,
+}));
 
 // Per-session mutable state so the dropdown actually reflects the user's picks
 // in the browser-only preview. Mirrors what the real `pi` binary does in
@@ -1812,7 +1837,10 @@ const stub = {
         return settingsState.workspaceOrder;
       }
       case "workspace.listSessions":
-        return [];
+        return sidebarDemoEnabled &&
+          (req as { workspacePath: string }).workspacePath === DEMO_WORKSPACE
+          ? sidebarDemoSessions.map((session) => ({ ...session }))
+          : [];
       case "sessionSearch.available":
         return true;
       case "sessionSearch.start": {

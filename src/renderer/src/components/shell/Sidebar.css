@@ -774,9 +774,9 @@
   border: 1.5px solid var(--surface-3);
 }
 
-/* triangle = needs attention */
+/* Yellow triangle = waiting for user input, not ongoing agent work. */
 .status-dot--attention {
-  background: var(--warning-soft);
+  background: var(--warning);
   border-radius: 0;
   clip-path: polygon(50% 0, 100% 100%, 0 100%);
 }

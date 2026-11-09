@@ -14,8 +14,12 @@ npm ci
 npm run dev:renderer
 ```
 
-Open the local URL printed by Vite. This preview uses `preview-stub.ts`, not your
-real sessions, credentials, or gateway.
+Open the local URL printed by Vite and append `?sidebarDemo=1` (normally
+`http://localhost:5173/?sidebarDemo=1`). This adds synthetic saved sessions for
+moving between groups and an example generated child for the visibility toggle.
+The preview uses `preview-stub.ts`, not your real sessions, credentials, or
+gateway. Its settings live in memory and reset on page reload; use the isolated
+Electron sandbox below to test persistence across restarts.
 
 For the real Electron app, use a separate Pi-Vis profile:
 
@@ -67,6 +71,9 @@ model calls by default.
   `name#<8 hex>` suffix. Ordinary forks, renamed children, and legacy files without
   lineage are not hidden by guesswork. Long histories also stay visible when
   bounded sampling cannot rule out an unread rename. Hiding does not stop any agent.
+- A session awaiting a Pi input dialog or blocking custom panel shows a yellow/amber
+  **Needs attention** triangle, even while the requesting tool remains in flight.
+  Ordinary working dots and active-session highlights keep their normal accent.
 
 See [sidebar semantics](architecture/sidebar-shell-layout.md) for the persisted
 shape, active-child exception, pagination, and focus behavior.

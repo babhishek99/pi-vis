@@ -72,6 +72,35 @@ test.describe("sidebar organization", () => {
     await seed(page);
   });
 
+  test("the manual sidebar demo URL provides synthetic sessions for a safe test drive", async ({
+    page,
+  }) => {
+    await page.goto("/?sidebarDemo=1");
+    await expect(page.locator(".composer__attach-btn")).toBeEnabled({ timeout: 20_000 });
+    const planning = page.locator(".sidebar__session").filter({ hasText: "Project planning" });
+    await expect(planning).toBeVisible();
+    await expect(
+      page.locator(".sidebar__session-name").filter({ hasText: "Ordinary fork" }),
+    ).toBeVisible();
+    await expect(
+      page.locator(".sidebar__session-name").filter({ hasText: CHILD_NAME }),
+    ).toHaveCount(0);
+    await planning.hover();
+    await planning.getByTitle("Move session to group").click();
+    await page
+      .getByRole("dialog", { name: "Move session to group" })
+      .getByRole("button", { name: "New group", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", { name: "New session group", exact: true });
+    await dialog.getByLabel("Group name").fill("Test drive");
+    await dialog.getByRole("button", { name: "Create group", exact: true }).click();
+    await expect(
+      page
+        .getByRole("group", { name: "Test drive", exact: true })
+        .locator(".sidebar__session-name"),
+    ).toHaveText("Project planning");
+  });
+
   test("defaults to hiding children and applies the Settings toggle immediately without session side effects", async ({
     page,
   }) => {

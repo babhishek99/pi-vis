@@ -69,14 +69,14 @@ function archiveFocusFallback(button: HTMLButtonElement): HTMLElement | null {
 
 function StatusDot({
   status,
-  hasPendingDialog,
+  needsUserInput,
   unreadStatus,
 }: {
   status: SessionStatus;
-  hasPendingDialog: boolean;
+  needsUserInput: boolean;
   unreadStatus?: "done" | "error" | undefined;
 }): React.ReactElement {
-  if (hasPendingDialog)
+  if (needsUserInput)
     return <span className="status-dot status-dot--attention" title="Needs attention" />;
   if (unreadStatus === "error")
     return <span className="status-dot status-dot--error" title="Turn ended with an error" />;
@@ -889,6 +889,11 @@ export function Sidebar({
                                     {visibleSessions.map((entry) => {
                                       if (entry.kind === "live") {
                                         const liveSession = sessions.get(entry.sessionId);
+                                        // A requesting tool may still be in flight while
+                                        // its blocking dialog/custom panel awaits input.
+                                        const needsUserInput =
+                                          (liveSession?.pendingDialogs.length ?? 0) > 0 ||
+                                          liveSession?.panel != null;
                                         const isPinned =
                                           entry.filePath != null && pinnedSet.has(entry.filePath);
                                         return (
@@ -941,14 +946,13 @@ export function Sidebar({
                                               }
                                             }}
                                           >
-                                            {shouldShowWorkingIndicator(liveSession) ? (
+                                            {!needsUserInput &&
+                                            shouldShowWorkingIndicator(liveSession) ? (
                                               <WorkingIndicator />
                                             ) : (
                                               <StatusDot
                                                 status={liveSession?.status ?? "cold"}
-                                                hasPendingDialog={
-                                                  (liveSession?.pendingDialogs.length ?? 0) > 0
-                                                }
+                                                needsUserInput={needsUserInput}
                                                 unreadStatus={liveSession?.unreadStatus}
                                               />
                                             )}

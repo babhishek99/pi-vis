@@ -90,6 +90,15 @@ checks collapsed membership/pins/visibility across a full app relaunch, and
 compares every fixture JSONL byte before and after organization. It uses an
 isolated user-data/session tree and a fake host; no paid provider is involved.
 
+`tests/render/sidebar-attention.spec.mts` checks pending dialogs and blocking
+custom panels while their requesting tool is still active: attention takes
+precedence, resolves to the theme's yellow/amber `warning` rather than `accent`
+in light/dark modes, and clears back to working status after input. The real
+Electron `/ask-user-question` journey in `commands.spec.mts` also checks the
+warning color and attention dismissal across IPC. The opt-in browser URL
+`?sidebarDemo=1` supplies synthetic saved rows for manual group/visibility tests;
+its render test exercises create-and-assign without touching real session data.
+
 ## Workspace session-search coverage
 
 Search tests use a generated isolated JSONL corpus: two workspaces, a mapped worktree, more than 30 sessions, exact/prefix/camel/snake/path/typo cases, pre-compaction and alternate-branch-only matches, repeated occurrences, corrupt/intermediate rows, incomplete and appended rows, and an excluded archived source. Unit/integration coverage verifies catalog ownership/confinement, transactional append/rebuild/corruption/restart behavior, deterministic relevance (Recall@10, MRR, nDCG), generation fencing, revision-invalidated pagination, exact context relocation/stale outcomes, and opaque-target validation. Runtime-pin coverage exercises Linux `/proc/self/fd` policy independently from Darwin/Windows alias policy and opens the identity-verified hard link through the real pinned Pi `SessionManager`, proving repeated reads and appends stay on the validated inode. `resources/pi-session-host/session-lineage.test.mjs` additionally proves existing and normally deferred fork successors retain canonical lineage through atomic serialization plus public manager reload, while crafted source-path cases remain untouched. Electron/render coverage proves scope and worktree inclusion, sidebar-pagination independence, default-on/restart-scoped enablement, disabled-launch chrome suppression, ESC/focus behavior, preview's zero host/session side effects, and explicit open's normal activation-visit release behavior.

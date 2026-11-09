@@ -122,8 +122,13 @@ rollback rather than focusing its detached predecessor. Labels use
 
 The flashing sidebar dot means **working**, not merely model streaming. Its single
 selector includes authority-following streaming and every visible context-compaction
-phase (active, cancelling, and retry-wait), while extension UI that is waiting on the
-user suppresses the streaming interpretation. Terminal `agent_settled` results remain
+phase (active, cancelling, and retry-wait). A pending Pi input dialog or blocking
+custom panel takes sidebar precedence even while its requesting tool is still in
+flight: it shows the non-pulsing **Needs attention** triangle in semantic `warning`
+(yellow/amber), never the accent/purple working dot. Closing or answering the
+surface restores the ordinary working/done/idle state. This is presentation only;
+it does not change runtime authority, cancellation, or the transcript timer.
+Terminal `agent_settled` results remain
 solid done/error dots. Sidebar rows must use this shared selector rather than reading a
 raw SDK boolean, so compaction cannot disappear from the session list. Each working dot
 animates only its own compositor-friendly opacity. At mount, its CSS animation is anchored
