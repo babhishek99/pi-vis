@@ -289,6 +289,25 @@
   color: var(--text);
 }
 
+.sidebar__session-group--drop-target > .sidebar__group-header,
+.sidebar__session-group--drop-target > .sidebar__ungrouped-label {
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+}
+
+.sidebar__session-group--drop-target > .sidebar__group-header .sidebar__group-toggle,
+.sidebar__session-group--drop-target > .sidebar__ungrouped-label {
+  color: var(--accent);
+}
+
+.sidebar__session[draggable="true"] {
+  cursor: grab;
+}
+
+.sidebar__session[draggable="true"]:active {
+  cursor: grabbing;
+}
+
 .sidebar__group-toggle > .icon {
   flex-shrink: 0;
   transition: transform 0.12s ease;

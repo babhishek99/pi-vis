@@ -38,8 +38,9 @@ a pinned row floats to the TOP of its containing session group (or the ungrouped
 list), above activity-sorted peers, in persisted manual order. Each row has a pin button (hover-
 revealed when unpinned, always-visible accent-filled when pinned); pinning appends
 to the array (lands at the bottom of the pinned group), and pinned rows are
-HTML-draggable to reorder within the group (drop targets only exist on pinned
-rows, so the group is self-contained). The array is global across workspaces — each
+HTML-draggable to reorder within the group (only same-section pinned-row drops
+reorder pins). Dropping onto another section instead moves group membership and
+leaves the global pin order unchanged. The array is global across workspaces — each
 workspace view renders only its own keys in their relative order. Keyed by file
 path (stable across relaunch and shared by the live row and its stored counterpart,
 so a pin survives the live→stored idle-eviction transition). Stale keys are filtered
@@ -83,8 +84,21 @@ rename/remove actions. Removing a group immediately returns its sessions to
 Ungrouped; it never archives, closes, deletes, or rewrites a session. Empty groups
 remain available as destinations.
 
-A session row's **Move session to group** folder action opens an app-owned dialog
-with the workspace's groups and Ungrouped. **New group** in that dialog creates a
+Any file-backed live or stored row can be dragged onto a group header or anywhere
+inside a different section of the same workspace. Valid targets highlight using
+semantic surface/accent tokens. Dropping onto a collapsed group opens it and
+immediately reveals the moved row's page; **Ungrouped** remains a visible drop
+destination even when empty. Drops reuse the existing optimistic settings write,
+roll back with an error on failure, and never activate or restart a session.
+Cross-workspace/foreign drops are ignored; only an in-memory source plus the
+private drag marker authorizes a membership change. Drag end/cancel clears that
+source and target highlight. A drag claims Escape so cancelling cannot interrupt
+the active agent. Workspace-grip reordering and same-section pin reordering keep
+separate admission paths.
+
+A session row's **Move session to group** folder action remains the keyboard-
+accessible alternative and opens an app-owned dialog with the workspace's groups
+and Ungrouped. **New group** in that dialog creates a
 destination and assigns the session in one settings patch. Moving expands the
 destination and reveals the moved row's page. Groups use `settings.sessionGroups`
 entries `{ id, workspacePath, name, sessionFiles, collapsed }`; membership is keyed

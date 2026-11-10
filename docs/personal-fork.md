@@ -17,6 +17,9 @@ npm run dev:renderer
 Open the local URL printed by Vite and append `?sidebarDemo=1` (normally
 `http://localhost:5173/?sidebarDemo=1`). This adds synthetic saved sessions for
 moving between groups and an example generated child for the visibility toggle.
+The initial demo conversation and newly messaged preview sessions also have
+synthetic file keys so their group/pin controls work; opening a saved demo keeps
+its name. These keys never create files.
 The preview uses `preview-stub.ts`, not your real sessions, credentials, or
 gateway. Its settings live in memory and reset on page reload; use the isolated
 Electron sandbox below to test persistence across restarts.
@@ -62,8 +65,12 @@ model calls by default.
 ## Organize sessions
 
 - Use the folder-plus action beside **New session** to create a group.
-- Use a saved row's folder action to move it into a group, return it to
-  **Ungrouped**, or create a new destination.
+- Drag a file-backed session onto a group header/section to move it, or onto
+  **Ungrouped** to remove its assignment. Collapsed destinations open on drop;
+  empty Ungrouped stays available. Only same-workspace drops are accepted.
+- Alternatively, use the row's folder action to choose a destination with the
+  keyboard, return it to **Ungrouped**, or create-and-assign a new group.
+  Unsaved/pathless sessions in the real app must acquire a saved file first.
 - Collapse, rename, or remove groups from their headers. Removing one keeps all
   its sessions. Pins keep their order within each section.
 - In Settings → Interface, enable **Show sub-agent sessions** when needed.

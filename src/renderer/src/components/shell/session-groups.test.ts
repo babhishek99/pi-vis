@@ -44,6 +44,12 @@ describe("sidebar session groups", () => {
     expect(partitionSessionGroups([], [], "/repo")).toEqual([{ group: null, entries: [] }]);
   });
 
+  it("retains an empty Ungrouped drop destination when every session is assigned", () => {
+    const sections = partitionSessionGroups([{ filePath: "one" }], [groups[0]!], "/repo");
+    expect(sections.at(-1)).toEqual({ group: null, entries: [] });
+    expect(sections[0]?.entries).toEqual([{ filePath: "one" }]);
+  });
+
   it("moves a file once, expands the destination, and never mutates the source or another workspace", () => {
     const before = structuredClone(groups);
     const next = moveSessionToGroup(groups, "/repo", "one", "b");

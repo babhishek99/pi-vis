@@ -77,6 +77,31 @@ async function click(target: HTMLElement): Promise<void> {
   });
 }
 
+async function drag(source: HTMLElement, destination: HTMLElement): Promise<void> {
+  const dataTransfer = {
+    types: [] as string[],
+    effectAllowed: "none",
+    dropEffect: "none",
+    setData(type: string): void {
+      this.types.push(type);
+    },
+  };
+  for (const [target, type] of [
+    [source, "dragstart"],
+    [destination, "dragover"],
+    [destination, "drop"],
+    [source, "dragend"],
+  ] as const) {
+    await act(async () => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+      target.dispatchEvent(event);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+}
+
 async function enterName(value: string): Promise<void> {
   const input = document.querySelector<HTMLInputElement>(
     '.session-group-dialog input[type="text"]',
@@ -362,6 +387,90 @@ describe("sidebar session organization", () => {
     expect(container.querySelector(".sidebar__show-more")?.textContent).toContain("5 remaining");
     await click(container.querySelector<HTMLButtonElement>(".sidebar__show-more")!);
     expect(container.querySelectorAll(".sidebar__session")).toHaveLength(36);
+  });
+
+  it.each([false, true])(
+    "dragging reveals an older moved row beyond the destination's first page (live: %s)",
+    async (live) => {
+      const saved = summary("Drag me", { mtime: 0 });
+      const peers = Array.from({ length: 35 }, (_, index) =>
+        summary(`Grouped ${index}`, { mtime: 100 - index }),
+      );
+      await useSettingsStore.getState().update({
+        sessionGroups: [
+          {
+            id: "work",
+            workspacePath: WS,
+            name: "Work",
+            collapsed: true,
+            sessionFiles: peers.map((peer) => peer.filePath),
+          },
+        ],
+      });
+      if (live) {
+        const id = "drag-live" as SessionId;
+        useSessionsStore.getState().createSession(id, WS, saved.filePath, saved.name);
+        const session = useSessionsStore.getState().sessions.get(id)!;
+        useSessionsStore.setState({
+          sessions: new Map([[id, { ...session, hasTreeHistory: true }]]),
+        });
+      }
+      await mount([...peers, saved]);
+      invoke.mockClear();
+      const group = container.querySelector<HTMLElement>('[role="group"][aria-label="Work"]')!;
+      expect(group.querySelectorAll(".sidebar__session")).toHaveLength(0);
+      await drag(row(saved.filePath), group.querySelector<HTMLElement>(".sidebar__group-header")!);
+      expect(persisted.sessionGroups[0]?.collapsed).toBe(false);
+      expect(persisted.sessionGroups[0]?.sessionFiles).toContain(saved.filePath);
+      expect(group.querySelectorAll(".sidebar__session")).toHaveLength(36);
+      expect(row(saved.filePath).closest('[role="group"]')).toBe(group);
+      expect(container.querySelectorAll(".sidebar__session-group--drop-target")).toHaveLength(0);
+      expect(useSessionsStore.getState().activeSessionId).toBeNull();
+      expect(invoke.mock.calls.every(([channel]) => channel === "settings.set")).toBe(true);
+    },
+  );
+
+  it("rolls back a failed drop with an error and leaves sessions untouched", async () => {
+    const saved = summary("Keep me");
+    await useSettingsStore.getState().update({
+      sessionGroups: [
+        {
+          id: "work",
+          workspacePath: WS,
+          name: "Work",
+          sessionFiles: [],
+          collapsed: true,
+        },
+      ],
+    });
+    await mount([saved]);
+    invoke.mockClear();
+    failWrites = true;
+    await drag(
+      row(saved.filePath),
+      container.querySelector<HTMLElement>(".sidebar__group-header")!,
+    );
+    expect(persisted.sessionGroups[0]?.sessionFiles).toEqual([]);
+    expect(useSettingsStore.getState().settings.sessionGroups[0]?.collapsed).toBe(true);
+    expect(row(saved.filePath).closest('[aria-label="Ungrouped"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn’t save");
+    expect(invoke.mock.calls.every(([channel]) => channel === "settings.set")).toBe(true);
+    failWrites = false;
+    await drag(
+      row(saved.filePath),
+      container.querySelector<HTMLElement>(".sidebar__group-header")!,
+    );
+    expect(persisted.sessionGroups[0]?.sessionFiles).toEqual([saved.filePath]);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("does not make a pathless session draggable", async () => {
+    const id = "unsaved" as SessionId;
+    useSessionsStore.getState().createSession(id, WS);
+    const session = useSessionsStore.getState().sessions.get(id)!;
+    useSessionsStore.setState({ sessions: new Map([[id, { ...session, hasTreeHistory: true }]]) });
+    await mount([]);
+    expect(container.querySelector(".sidebar__session")?.getAttribute("draggable")).toBe("false");
   });
 
   it("keeps failed edits open with the draft intact and settings rolled back", async () => {

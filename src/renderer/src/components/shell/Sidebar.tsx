@@ -1,9 +1,10 @@
 import type { SessionId } from "@shared/ids.js";
 import type { SessionStatus } from "@shared/ipc-contract.js";
-import type { AppSettings } from "@shared/settings.js";
+import type { AppSettings, SessionGroup } from "@shared/settings.js";
 import { isSubagentSession } from "@shared/subagent-sessions.js";
 import type React from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import { useExtensionUpdatesStore } from "../../stores/extension-updates-store.js";
 import {
   isNewSessionPending,
@@ -31,6 +32,13 @@ import { moveSessionToGroup, partitionSessionGroups } from "./session-groups.js"
 import "./Sidebar.css";
 
 const VISIBLE_PAGE_SIZE = 30;
+const SESSION_DRAG_TYPE = "application/x-pi-vis-session";
+
+interface DraggedSession {
+  workspacePath: string;
+  filePath: string;
+  groupId: string | null;
+}
 
 type SidebarSessionEntry = {
   name: string;
@@ -170,7 +178,10 @@ export function Sidebar({
   );
   const sidebarRef = useRef<HTMLElement>(null);
   const dragIndexRef = useRef<number | null>(null);
-  const pinnedDragKeyRef = useRef<string | null>(null);
+  const sessionDragRef = useRef<DraggedSession | null>(null);
+  const [isDraggingSession, setIsDraggingSession] = useState(false);
+  const [dropTargetKey, setDropTargetKey] = useState<string | null>(null);
+  useEscapeClaim(isDraggingSession);
   const [pendingArchive, setPendingArchive] = useState<PendingArchive | null>(null);
   const [archiveInProgress, setArchiveInProgress] = useState(false);
   const [pendingGroupEdit, setPendingGroupEdit] = useState<PendingGroupEdit | null>(null);
@@ -194,6 +205,117 @@ export function Sidebar({
     },
     [updateSettings],
   );
+
+  const clearSessionDrag = useCallback((): void => {
+    sessionDragRef.current = null;
+    setIsDraggingSession(false);
+    setDropTargetKey(null);
+  }, []);
+
+  const revealGroupedSession = (
+    workspacePath: string,
+    filePath: string,
+    groupId: string | null,
+    groups: SessionGroup[],
+  ): void => {
+    const section = partitionSessionGroups(
+      getUnifiedSessions(workspacePath),
+      groups,
+      workspacePath,
+    ).find(({ group }) => (group?.id ?? null) === groupId);
+    const index = section?.entries.findIndex((entry) => entry.filePath === filePath) ?? -1;
+    if (index >= VISIBLE_PAGE_SIZE) {
+      const key = JSON.stringify([workspacePath, groupId]);
+      setVisibleCounts((previous) => ({
+        ...previous,
+        [key]: Math.max(
+          previous[key] ?? VISIBLE_PAGE_SIZE,
+          Math.ceil((index + 1) / VISIBLE_PAGE_SIZE) * VISIBLE_PAGE_SIZE,
+        ),
+      }));
+    }
+  };
+
+  const canDropSession = (
+    event: React.DragEvent,
+    workspacePath: string,
+    groupId: string | null,
+  ): boolean => {
+    const source = sessionDragRef.current;
+    return (
+      source !== null &&
+      event.dataTransfer.types.includes(SESSION_DRAG_TYPE) &&
+      source.workspacePath === workspacePath &&
+      source.groupId !== groupId
+    );
+  };
+
+  const dropSession = async (workspacePath: string, groupId: string | null): Promise<void> => {
+    const source = sessionDragRef.current;
+    clearSessionDrag();
+    if (!source || source.workspacePath !== workspacePath) return;
+    const current = useSettingsStore.getState().settings.sessionGroups;
+    const next = moveSessionToGroup(current, workspacePath, source.filePath, groupId);
+    if (next === current) return;
+    revealGroupedSession(workspacePath, source.filePath, groupId, next);
+    await persistSidebar({ sessionGroups: next });
+    const restore = (): void => {
+      // Moving/rollback can remount the row. Never steal focus from a newer action.
+      if (document.activeElement !== document.body) return;
+      Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>(".sidebar__session") ?? [])
+        .find((row) => row.dataset.sessionFile === source.filePath)
+        ?.focus();
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(restore);
+    else queueMicrotask(restore);
+  };
+
+  const sessionDragProps = (
+    workspacePath: string,
+    entry: SidebarSessionEntry,
+    groupId: string | null,
+    isPinned: boolean,
+  ): React.HTMLAttributes<HTMLDivElement> => {
+    const filePath = entry.filePath;
+    if (!filePath) return { draggable: false };
+    const canReorderPinned = (event: React.DragEvent): boolean => {
+      const source = sessionDragRef.current;
+      return (
+        isPinned &&
+        source !== null &&
+        event.dataTransfer.types.includes(SESSION_DRAG_TYPE) &&
+        source.workspacePath === workspacePath &&
+        source.groupId === groupId &&
+        pinnedSet.has(source.filePath)
+      );
+    };
+    return {
+      draggable: true,
+      onDragStart: (event) => {
+        event.stopPropagation();
+        dragIndexRef.current = null;
+        sessionDragRef.current = { workspacePath, filePath, groupId };
+        setIsDraggingSession(true);
+        event.dataTransfer.effectAllowed = "move";
+        // Only an in-memory source authorizes a move; external payloads are ignored.
+        event.dataTransfer.setData(SESSION_DRAG_TYPE, "sidebar-session");
+      },
+      onDragEnd: clearSessionDrag,
+      onDragOver: (event) => {
+        if (!canReorderPinned(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = "move";
+        setDropTargetKey(null);
+      },
+      onDrop: (event) => {
+        if (!canReorderPinned(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        handlePinnedDrop(filePath);
+      },
+    };
+  };
 
   const saveGroupEdit = async (value: string): Promise<void> => {
     if (!pendingGroupEdit) return;
@@ -225,22 +347,7 @@ export function Sidebar({
     }
     await updateSettings({ sessionGroups: next });
     if (target.filePath && target.mode !== "rename") {
-      const section = partitionSessionGroups(
-        getUnifiedSessions(target.workspacePath),
-        next,
-        target.workspacePath,
-      ).find(({ group }) => (group?.id ?? null) === destinationGroupId);
-      const index = section?.entries.findIndex((entry) => entry.filePath === target.filePath) ?? -1;
-      if (index >= VISIBLE_PAGE_SIZE) {
-        const key = JSON.stringify([target.workspacePath, destinationGroupId]);
-        setVisibleCounts((previous) => ({
-          ...previous,
-          [key]: Math.max(
-            previous[key] ?? VISIBLE_PAGE_SIZE,
-            Math.ceil((index + 1) / VISIBLE_PAGE_SIZE) * VISIBLE_PAGE_SIZE,
-          ),
-        }));
-      }
+      revealGroupedSession(target.workspacePath, target.filePath, destinationGroupId, next);
     }
   };
 
@@ -265,8 +372,8 @@ export function Sidebar({
   // relaunch). A no-op self-drop or unknown key skips the settings write.
   const handlePinnedDrop = useCallback(
     (targetKey: string) => {
-      const dragged = pinnedDragKeyRef.current;
-      pinnedDragKeyRef.current = null;
+      const dragged = sessionDragRef.current?.filePath;
+      clearSessionDrag();
       if (!dragged || dragged === targetKey) return;
       const from = pinnedSessions.indexOf(dragged);
       const to = pinnedSessions.indexOf(targetKey);
@@ -276,7 +383,7 @@ export function Sidebar({
       next.splice(to, 0, dragged);
       void updateSettings({ pinnedSessions: next });
     },
-    [pinnedSessions, updateSettings],
+    [pinnedSessions, updateSettings, clearSessionDrag],
   );
 
   // Pagination is per section: older grouped sessions must not disappear
@@ -618,8 +725,10 @@ export function Sidebar({
               key={ws.path}
               className={`sidebar__workspace ${isActiveWs ? "sidebar__workspace--active" : ""}`}
               onDragOver={(e) => {
+                // Only the workspace grip may reorder workspaces. A session
+                // dropped outside a valid same-workspace section is rejected.
                 e.preventDefault();
-                e.dataTransfer.dropEffect = "move";
+                e.dataTransfer.dropEffect = dragIndexRef.current === null ? "none" : "move";
               }}
               onDrop={(e) => {
                 e.preventDefault();
@@ -634,6 +743,7 @@ export function Sidebar({
                   draggable
                   title="Drag to reorder"
                   onDragStart={(e) => {
+                    clearSessionDrag();
                     dragIndexRef.current = index;
                     e.dataTransfer.effectAllowed = "move";
                     // Keep the drag image minimal; default is the grip itself.
@@ -779,10 +889,33 @@ export function Sidebar({
                           return (
                             <div
                               key={sectionKey}
-                              className="sidebar__session-group"
-                              data-session-group-id={group?.id}
-                              role={group ? "group" : undefined}
-                              aria-label={group?.name}
+                              className={`sidebar__session-group ${dropTargetKey === sectionKey ? "sidebar__session-group--drop-target" : ""}`}
+                              data-session-group-id={group?.id ?? ""}
+                              role={hasGroups ? "group" : undefined}
+                              aria-label={group?.name ?? (hasGroups ? "Ungrouped" : undefined)}
+                              onDragOver={(event) => {
+                                if (!canDropSession(event, ws.path, group?.id ?? null)) return;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                event.dataTransfer.dropEffect = "move";
+                                setDropTargetKey(sectionKey);
+                              }}
+                              onDragLeave={(event) => {
+                                if (
+                                  event.relatedTarget instanceof Node &&
+                                  event.currentTarget.contains(event.relatedTarget)
+                                )
+                                  return;
+                                setDropTargetKey((current) =>
+                                  current === sectionKey ? null : current,
+                                );
+                              }}
+                              onDrop={(event) => {
+                                if (!canDropSession(event, ws.path, group?.id ?? null)) return;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                void dropSession(ws.path, group?.id ?? null);
+                              }}
                             >
                               {group ? (
                                 <div className="sidebar__group-header">
@@ -903,38 +1036,12 @@ export function Sidebar({
                                             role="button"
                                             tabIndex={0}
                                             className={`sidebar__session fade-scope ${activeSessionId === entry.sessionId ? "sidebar__session--active" : ""} ${isPinned ? "sidebar__session--pinned" : ""}`}
-                                            draggable={isPinned}
-                                            onDragStart={
-                                              isPinned && entry.filePath
-                                                ? (e) => {
-                                                    pinnedDragKeyRef.current = entry.filePath!;
-                                                    e.dataTransfer.effectAllowed = "move";
-                                                  }
-                                                : undefined
-                                            }
-                                            onDragOver={
-                                              isPinned
-                                                ? (e) => {
-                                                    e.preventDefault();
-                                                    e.dataTransfer.dropEffect = "move";
-                                                  }
-                                                : undefined
-                                            }
-                                            onDrop={
-                                              isPinned && entry.filePath
-                                                ? (e) => {
-                                                    e.preventDefault();
-                                                    handlePinnedDrop(entry.filePath!);
-                                                  }
-                                                : undefined
-                                            }
-                                            onDragEnd={
-                                              isPinned
-                                                ? () => {
-                                                    pinnedDragKeyRef.current = null;
-                                                  }
-                                                : undefined
-                                            }
+                                            {...sessionDragProps(
+                                              ws.path,
+                                              entry,
+                                              group?.id ?? null,
+                                              isPinned,
+                                            )}
                                             onClick={() =>
                                               handleSelectLiveSession(entry.sessionId, ws.path)
                                             }
@@ -1044,38 +1151,12 @@ export function Sidebar({
                                           role="button"
                                           tabIndex={0}
                                           className={`sidebar__session fade-scope ${isPinned ? "sidebar__session--pinned" : ""}`}
-                                          draggable={isPinned}
-                                          onDragStart={
-                                            isPinned
-                                              ? (e) => {
-                                                  pinnedDragKeyRef.current = entry.filePath;
-                                                  e.dataTransfer.effectAllowed = "move";
-                                                }
-                                              : undefined
-                                          }
-                                          onDragOver={
-                                            isPinned
-                                              ? (e) => {
-                                                  e.preventDefault();
-                                                  e.dataTransfer.dropEffect = "move";
-                                                }
-                                              : undefined
-                                          }
-                                          onDrop={
-                                            isPinned
-                                              ? (e) => {
-                                                  e.preventDefault();
-                                                  handlePinnedDrop(entry.filePath);
-                                                }
-                                              : undefined
-                                          }
-                                          onDragEnd={
-                                            isPinned
-                                              ? () => {
-                                                  pinnedDragKeyRef.current = null;
-                                                }
-                                              : undefined
-                                          }
+                                          {...sessionDragProps(
+                                            ws.path,
+                                            entry,
+                                            group?.id ?? null,
+                                            isPinned,
+                                          )}
                                           onClick={() =>
                                             handleResumeSession(ws.path, entry.filePath)
                                           }

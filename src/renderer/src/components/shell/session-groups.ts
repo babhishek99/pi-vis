@@ -26,7 +26,8 @@ export function partitionSessionGroups<T extends { filePath: string | undefined 
     const section = entry.filePath ? byFile.get(entry.filePath) : undefined;
     (section ?? ungrouped).entries.push(entry);
   }
-  if (ungrouped.entries.length > 0 || sections.length === 0) sections.push(ungrouped);
+  // Keep Ungrouped as a drop destination even when all sessions are grouped.
+  sections.push(ungrouped);
   return sections;
 }
 

@@ -111,21 +111,28 @@ test("discovers children, persists sidebar organization across relaunch, and nev
       page.locator(".sidebar__session-name").filter({ hasText: "Explore#1234abcd" }),
     ).toBeVisible();
 
-    const row = page.locator(".sidebar__session").filter({ hasText: "Payroll review" });
-    await row.hover();
-    await row.getByTitle("Pin session", { exact: true }).click();
-    // Pinning moves the row; reveal its hover actions at the new position.
-    await row.hover();
-    await row.getByTitle("Move session to group").click();
-    await page
-      .getByRole("dialog", { name: "Move session to group" })
-      .getByRole("button", { name: "New group", exact: true })
-      .click();
+    // Reproduce the manual workflow: create an empty group first, then drag
+    // saved rows into it. A collapsed header must also accept a drop.
+    await page.getByRole("button", { name: "Create session group in workspace" }).click();
     const dialog = page.getByRole("dialog", { name: "New session group", exact: true });
     await dialog.getByLabel("Group name").fill("Research");
     await dialog.getByRole("button", { name: "Create group", exact: true }).click();
     const group = page.getByRole("group", { name: "Research", exact: true });
+    await group.getByRole("button", { name: "Collapse group Research" }).click();
+    const row = page.locator(".sidebar__session").filter({ hasText: "Payroll review" });
+    await row.hover();
+    await row.getByTitle("Pin session", { exact: true }).click();
+    await row.dragTo(group.locator(".sidebar__group-header"));
     await expect(group.locator(".sidebar__session--pinned")).toContainText("Payroll review");
+    const fork = page.locator(".sidebar__session").filter({ hasText: "Ordinary fork" });
+    await fork.dragTo(group.locator(".sidebar__group-header"));
+    await expect(group.locator(".sidebar__session")).toHaveCount(2);
+    await fork.dragTo(
+      page
+        .getByRole("group", { name: "Ungrouped", exact: true })
+        .locator(".sidebar__ungrouped-label"),
+    );
+    await expect(group.locator(".sidebar__session")).toHaveCount(1);
     await group.getByRole("button", { name: "Collapse group Research" }).click();
     await expect.poll(() => readSettings().sessionGroups?.[0]?.collapsed).toBe(true);
     expect(readSettings().sessionGroups[0]?.sessionFiles).toEqual([parentFile]);

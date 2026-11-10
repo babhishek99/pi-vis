@@ -79,14 +79,22 @@ bounded I/O with conservative unread-middle/boundary handling, and fresh/cache i
 workspace confinement, immutable moves, stale keys, and duplicate membership.
 `Sidebar.organization.test.tsx` covers default hiding and the active-child
 exception beyond page boundaries, live-name clears, group editing, independent
-pagination, and failed-save draft retention.
+pagination, failed-save draft retention, file-backed live/stored drag moves beyond
+a destination page cut, pathless-source exclusion, and failed-drop rollback/retry.
+Pure group coverage retains an empty Ungrouped drop destination.
 
 `tests/render/sidebar-organization.spec.mts` exercises the actual Settings toggle,
 keyboard entry, Escape ownership during streaming, focus trapping/restoration,
 group controls, pending/failed-save focus containment, removal rollback focus,
-narrow layouts, and light/dark screenshots. The matching Electron
+narrow layouts, and light/dark screenshots. Native mouse drags cover the manual
+create-empty-group → drag-from-Ungrouped journey, group-to-group and collapsed
+header drops, Ungrouped return, live demo identities/labels, cross-section pin
+retention versus same-section pin ordering, cross-workspace/foreign/cancelled
+payload rejection, Escape non-interruption, workspace-grip independence, and
+optimistic slow/failing drop rollback with retry. The matching Electron
 `tests/e2e/sidebar-organization.spec.mts` drives real discovery and settings IPC,
-checks collapsed membership/pins/visibility across a full app relaunch, and
+drags real-discovery rows into a pre-created collapsed group and back to
+Ungrouped, checks membership/pins/visibility across a full app relaunch, and
 compares every fixture JSONL byte before and after organization. It uses an
 isolated user-data/session tree and a fake host; no paid provider is involved.
 

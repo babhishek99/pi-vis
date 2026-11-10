@@ -8,7 +8,7 @@ const CHILD_NAME = "Explore#1234abcd";
 
 type PreviewWindow = {
   __pivisStore: typeof useSessionsStore;
-  __pivisPreview: { abortCalls: number; startStreaming(): void };
+  __pivisPreview: { abortCalls: number; startStreaming(): void; escapeClaimCount(): number };
 };
 
 async function seed(page: import("@playwright/test").Page): Promise<void> {
@@ -99,6 +99,226 @@ test.describe("sidebar organization", () => {
         .getByRole("group", { name: "Test drive", exact: true })
         .locator(".sidebar__session-name"),
     ).toHaveText("Project planning");
+  });
+
+  test("drags a demo session from Ungrouped into an existing group, across collapsed groups, and back", async ({
+    page,
+  }) => {
+    await page.goto("/?sidebarDemo=1");
+    await expect(page.locator(".composer__attach-btn")).toBeEnabled({ timeout: 20_000 });
+    const active = await page.evaluate(
+      () => (window as unknown as PreviewWindow).__pivisStore.getState().activeSessionId,
+    );
+    for (const name of ["Research", "Launch"]) {
+      await page.getByRole("button", { name: "Create session group in pi-vis" }).click();
+      const dialog = page.getByRole("dialog", { name: "New session group", exact: true });
+      await dialog.getByLabel("Group name").fill(name);
+      await dialog.getByRole("button", { name: "Create group", exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+    }
+    const research = page.getByRole("group", { name: "Research", exact: true });
+    const launch = page.getByRole("group", { name: "Launch", exact: true });
+    const ungrouped = page.getByRole("group", { name: "Ungrouped", exact: true });
+    const row = page.locator('.sidebar__session[data-session-file="/preview/planning.jsonl"]');
+    const demo = page.locator(
+      '.sidebar__session[data-session-file="/preview/demo-conversation.jsonl"]',
+    );
+    await expect(row).toHaveAttribute("draggable", "true");
+    await expect(demo).toHaveAttribute("draggable", "true");
+    await expect(ungrouped.locator(".sidebar__session-name")).toContainText(["Project planning"]);
+    await row.dragTo(research.locator(".sidebar__group-header"));
+    await expect(research.locator(".sidebar__session-name")).toHaveText("Project planning");
+    await expect(
+      page.locator('.sidebar__session[data-session-file="/preview/planning.jsonl"]'),
+    ).toHaveCount(1);
+    await launch.getByRole("button", { name: "Collapse group Launch" }).click();
+    await row.dragTo(launch.locator(".sidebar__group-header"));
+    await expect(launch.getByRole("button", { name: "Collapse group Launch" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    await expect(launch.locator(".sidebar__session-name")).toHaveText("Project planning");
+    await expect(research.locator(".sidebar__session")).toHaveCount(0);
+    await row.dragTo(ungrouped.locator(".sidebar__ungrouped-label"));
+    await expect(ungrouped.locator('[data-session-file="/preview/planning.jsonl"]')).toBeVisible();
+    expect(
+      await page.evaluate(
+        () => (window as unknown as PreviewWindow).__pivisStore.getState().activeSessionId,
+      ),
+    ).toBe(active);
+    // A loaded demo conversation has the same move behavior, without losing its label.
+    await row.locator(".sidebar__session-name").click();
+    await expect(page.locator(".composer__attach-btn")).toBeEnabled();
+    await expect(page.locator(".sidebar__session--active .sidebar__session-name")).toHaveText(
+      "Project planning",
+    );
+    await row.dragTo(research.locator(".sidebar__group-header"));
+    await expect(research.locator(".sidebar__session-name")).toHaveText("Project planning");
+    await demo.dragTo(research.locator(".sidebar__group-header"));
+    await expect(research.locator(".sidebar__session")).toHaveCount(2);
+    await expect(
+      research.locator(
+        '[data-session-file="/preview/demo-conversation.jsonl"] .sidebar__session-name',
+      ),
+    ).toHaveText("Demo conversation");
+    const settings = await page.evaluate(() => window.pivis.invoke("settings.get", undefined));
+    expect(settings.sessionGroups.find((group) => group.name === "Research")?.sessionFiles).toEqual(
+      ["/preview/planning.jsonl", "/preview/demo-conversation.jsonl"],
+    );
+    expect(settings.archivedSessions).toEqual([]);
+    expect(settings.pinnedSessions).toEqual([]);
+    await expect(page.locator(".sidebar__session--active .sidebar__session-name")).toHaveText(
+      "Project planning",
+    );
+    await expect(page.locator(".sidebar__session-group--drop-target")).toHaveCount(0);
+  });
+
+  test("group drops preserve pins, while pinned rows still reorder inside their own section", async ({
+    page,
+  }) => {
+    await page.getByRole("button", { name: "Create session group in pi-vis" }).click();
+    const dialog = page.getByRole("dialog", { name: "New session group", exact: true });
+    await dialog.getByLabel("Group name").fill("Work");
+    await dialog.getByRole("button", { name: "Create group", exact: true }).click();
+    const group = page.getByRole("group", { name: "Work", exact: true });
+    const ungrouped = page.getByRole("group", { name: "Ungrouped", exact: true });
+    const review = page.locator('.sidebar__session[data-session-file="/preview/review.jsonl"]');
+    const fork = page.locator('.sidebar__session[data-session-file="/preview/fork.jsonl"]');
+    const active = await page.evaluate(
+      () => (window as unknown as PreviewWindow).__pivisStore.getState().activeSessionId,
+    );
+    await review.hover();
+    await review.getByTitle("Pin session", { exact: true }).click();
+    await fork.hover();
+    await fork.getByTitle("Pin session", { exact: true }).click();
+    await review.dragTo(group.locator(".sidebar__group-header"));
+    await expect(group.locator(".sidebar__session--pinned")).toHaveText("Payroll review");
+    // Landing on a pinned row in a different section is a group move, not a pin reorder.
+    await review.dragTo(fork);
+    await expect(ungrouped.locator(".sidebar__session--pinned .sidebar__session-name")).toHaveText([
+      "Payroll review",
+      "Ordinary fork",
+    ]);
+    expect(
+      (await page.evaluate(() => window.pivis.invoke("settings.get", undefined))).pinnedSessions,
+    ).toEqual([WORK_FILE, "/preview/fork.jsonl"]);
+    await fork.dragTo(review);
+    await expect(ungrouped.locator(".sidebar__session--pinned .sidebar__session-name")).toHaveText([
+      "Ordinary fork",
+      "Payroll review",
+    ]);
+    expect(
+      (await page.evaluate(() => window.pivis.invoke("settings.get", undefined))).pinnedSessions,
+    ).toEqual(["/preview/fork.jsonl", WORK_FILE]);
+    expect(
+      await page.evaluate(
+        () => (window as unknown as PreviewWindow).__pivisStore.getState().activeSessionId,
+      ),
+    ).toBe(active);
+  });
+
+  test("rejects cross-workspace, foreign, and cancelled session drags without reordering workspaces", async ({
+    page,
+  }) => {
+    const other = "/Users/demo/src/other";
+    await page.evaluate((workspace) => {
+      const store = (window as unknown as PreviewWindow).__pivisStore.getState();
+      store.addWorkspace(workspace);
+      store.expandWorkspace(workspace);
+    }, other);
+    await page.getByRole("button", { name: "Create session group in other" }).click();
+    const dialog = page.getByRole("dialog", { name: "New session group", exact: true });
+    await dialog.getByLabel("Group name").fill("Other workspace");
+    await dialog.getByRole("button", { name: "Create group", exact: true }).click();
+    const target = page.getByRole("group", { name: "Other workspace", exact: true });
+    await page.getByRole("button", { name: "Create session group in pi-vis" }).click();
+    const ownDialog = page.getByRole("dialog", { name: "New session group", exact: true });
+    await ownDialog.getByLabel("Group name").fill("Own workspace");
+    await ownDialog.getByRole("button", { name: "Create group", exact: true }).click();
+    const ownTarget = page.getByRole("group", { name: "Own workspace", exact: true });
+    const row = page.locator('.sidebar__session[data-session-file="/preview/review.jsonl"]');
+    const before = await page.evaluate(() => window.pivis.invoke("settings.get", undefined));
+    await row.dragTo(target.locator(".sidebar__group-header"));
+    await expect(target.locator(".sidebar__session")).toHaveCount(0);
+    expect(
+      (await page.evaluate(() => window.pivis.invoke("settings.get", undefined))).sessionGroups,
+    ).toEqual(before.sessionGroups);
+    const dataTransfer = await page.evaluateHandle(() => {
+      const transfer = new DataTransfer();
+      transfer.setData("application/x-pi-vis-session", "sidebar-session");
+      return transfer;
+    });
+    await ownTarget.dispatchEvent("dragover", { dataTransfer });
+    await ownTarget.dispatchEvent("drop", { dataTransfer });
+    const aborts = await page.evaluate(() => {
+      const hooks = (window as unknown as PreviewWindow).__pivisPreview;
+      hooks.startStreaming();
+      return hooks.abortCalls;
+    });
+    await row.dispatchEvent("dragstart", { dataTransfer });
+    expect(
+      await page.evaluate(() =>
+        (window as unknown as PreviewWindow).__pivisPreview.escapeClaimCount(),
+      ),
+    ).toBe(1);
+    await page.keyboard.press("Escape");
+    expect(
+      await page.evaluate(() => (window as unknown as PreviewWindow).__pivisPreview.abortCalls),
+    ).toBe(aborts);
+    await row.dispatchEvent("dragend", { dataTransfer });
+    expect(
+      await page.evaluate(() =>
+        (window as unknown as PreviewWindow).__pivisPreview.escapeClaimCount(),
+      ),
+    ).toBe(0);
+    await ownTarget.dispatchEvent("drop", { dataTransfer });
+    expect(
+      (await page.evaluate(() => window.pivis.invoke("settings.get", undefined))).sessionGroups,
+    ).toEqual(before.sessionGroups);
+    await dataTransfer.dispose();
+    const sourceWorkspace = page
+      .locator(".sidebar__workspace")
+      .filter({ has: page.locator(`.sidebar__workspace-name[title="${WORKSPACE}"]`) });
+    const otherWorkspace = page
+      .locator(".sidebar__workspace")
+      .filter({ has: page.locator(`.sidebar__workspace-name[title="${other}"]`) });
+    await sourceWorkspace
+      .locator(".sidebar__workspace-grip")
+      .dragTo(otherWorkspace.locator(".sidebar__workspace-name"));
+    expect(
+      (await page.evaluate(() => window.pivis.invoke("settings.get", undefined))).workspaceOrder,
+    ).toEqual([other, WORKSPACE]);
+    await expect(page.locator(".sidebar__session-group--drop-target")).toHaveCount(0);
+  });
+
+  test("shows an optimistic drop during a slow save, then rolls back and permits retry on failure", async ({
+    page,
+  }) => {
+    await page.getByRole("button", { name: "Create session group in pi-vis" }).click();
+    const dialog = page.getByRole("dialog", { name: "New session group", exact: true });
+    await dialog.getByLabel("Group name").fill("Retry group");
+    await dialog.getByRole("button", { name: "Create group", exact: true }).click();
+    const group = page.getByRole("group", { name: "Retry group", exact: true });
+    const row = page.locator('.sidebar__session[data-session-file="/preview/review.jsonl"]');
+    await holdFailingGroupSave(page);
+    await row.dragTo(group.locator(".sidebar__group-header"));
+    await expect(group.locator(".sidebar__session-name")).toHaveText("Payroll review");
+    await expect(page.locator(".sidebar__session-group--drop-target")).toHaveCount(0);
+    await rejectGroupSave(page);
+    await expect(group.locator(".sidebar__session")).toHaveCount(0);
+    await expect(
+      page
+        .getByRole("group", { name: "Ungrouped", exact: true })
+        .locator('[data-session-file="/preview/review.jsonl"]'),
+    ).toBeVisible();
+    await expect(page.getByRole("alert")).toContainText("Couldn’t save");
+    await row.dragTo(group.locator(".sidebar__group-header"));
+    await expect(group.locator(".sidebar__session-name")).toHaveText("Payroll review");
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    expect(
+      (await page.evaluate(() => window.pivis.invoke("settings.get", undefined))).sessionGroups[0]
+        ?.sessionFiles,
+    ).toEqual([WORK_FILE]);
   });
 
   test("defaults to hiding children and applies the Settings toggle immediately without session side effects", async ({

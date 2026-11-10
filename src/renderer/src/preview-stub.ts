@@ -67,6 +67,7 @@ let customEntryRendererVersion = 1;
 
 const PREVIEW_HOST_ID = "00000000-0000-4000-8000-000000000001";
 type PreviewRuntime = {
+  sessionName?: string | undefined;
   isStreaming: boolean;
   sessionEpoch: number;
   snapshotSequence: number;
@@ -344,6 +345,8 @@ function runtimeFor(sessionId: SessionId): PreviewRuntime {
   let runtime = previewRuntime.get(sessionId);
   if (!runtime) {
     runtime = {
+      sessionName:
+        sidebarDemoEnabled && sessionId === DEMO_SESSION_ID ? "Demo conversation" : undefined,
       isStreaming: false,
       sessionEpoch: 0,
       snapshotSequence: 0,
@@ -407,6 +410,7 @@ function semanticSnapshot(sessionId: SessionId): SemanticSnapshot {
     operationJournalTruncated: false,
     model: { id: currentModelId, provider: currentModelProvider },
     thinkingLevel: currentThinkingLevel,
+    ...(sidebarDemoEnabled ? { sessionName: runtime.sessionName } : {}),
     catalog: { notifications: [], statuses: {}, widgets: {}, capabilityDiagnostics: [] },
   };
 }
@@ -742,7 +746,12 @@ function seedDemoSession(): void {
   const store = useSessionsStore.getState();
   store.addWorkspace(DEMO_WORKSPACE);
   store.setActiveWorkspace(DEMO_WORKSPACE);
-  store.createSession(DEMO_SESSION_ID, DEMO_WORKSPACE);
+  store.createSession(
+    DEMO_SESSION_ID,
+    DEMO_WORKSPACE,
+    sidebarDemoEnabled ? "/preview/demo-conversation.jsonl" : undefined,
+    sidebarDemoEnabled ? "Demo conversation" : undefined,
+  );
   store.setSessionStatus(DEMO_SESSION_ID, "ready");
   store.setActiveSession(DEMO_SESSION_ID);
   emitRuntimeState(DEMO_SESSION_ID, false);
@@ -1989,17 +1998,26 @@ const stub = {
         ) {
           initialWorkspaceOpenSessionId = sessionId;
         }
+        const demo = sidebarDemoEnabled
+          ? sidebarDemoSessions.find((session) => session.filePath === sessionFile)
+          : undefined;
+        if (demo?.name) runtimeFor(sessionId).sessionName = demo.name;
         return {
           outcome: "opened",
           sessionId,
-          name: null,
-          preview: null,
+          name: demo?.name ?? null,
+          preview: demo?.preview ?? null,
           sessionStatus: "cold",
         };
       }
       case "session.activate": {
         const { sessionId } = req as { sessionId: SessionId };
         setTimeout(() => {
+          // Browser-only conversations have synthetic, never-written file keys
+          // so even newly messaged demo rows can exercise group/pin controls.
+          if (sidebarDemoEnabled) {
+            useSessionsStore.getState().setSessionFile(sessionId, `/preview/${sessionId}.jsonl`);
+          }
           emit("session.statusChanged", { sessionId, status: "ready" });
           emitRuntimeState(sessionId, false);
           if (sessionId === initialWorkspaceOpenSessionId) {
