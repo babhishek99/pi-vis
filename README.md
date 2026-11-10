@@ -66,8 +66,11 @@ Opens the Electron app with HMR. The renderer is also accessible at http://local
 ## Personal customization
 
 See [Personal fork development](docs/personal-fork.md) for an isolated UI preview,
-a separate Electron profile, session-group controls, and the pending API contract
-for gateway-reported session costs. These changes do not replace your installed app.
+a separate Electron profile, session-group controls, and opt-in gateway-recorded
+spend. A private Datadog adapter reports the previous completed UTC month across
+personal gateway traffic; supported requests can be attributed prospectively to
+a direct session with explicit partial coverage. Missing history is never priced
+by guesswork. These changes do not replace your installed app.
 
 ## Testing
 

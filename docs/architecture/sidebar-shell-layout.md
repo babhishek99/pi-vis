@@ -163,6 +163,16 @@ once to document timeline zero, keeping late or reappearing dots exactly in phas
 animating an inherited property on `.sidebar__workspaces`, which would force frame-rate
 style recalculation across the full sidebar subtree.
 
+### Optional gateway-spend widget
+
+When private launch configuration enables the Datadog audit adapter, a quiet
+completed-month spend control renders immediately above the sidebar footer.
+Its details identify the personal legacy-gateway/all-harness scope, exact UTC
+calendar bounds, source, as-of time, unpriced/partial records and stale/errors.
+Refresh is main-rate-limited. Missing costs never render as a known zero, and
+this presentation has no effect on groups, session order, agent activity or
+runtime admission. See `docs/architecture/gateway-spend.md`.
+
 ### Shell layout (canvas + floating content card)
 
 The window is a single unified **canvas** (`.app` background = `mantle`). The title bar

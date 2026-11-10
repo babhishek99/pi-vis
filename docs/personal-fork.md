@@ -85,28 +85,43 @@ model calls by default.
 See [sidebar semantics](architecture/sidebar-shell-layout.md) for the persisted
 shape, active-child exception, pagination, and focus behavior.
 
-## Live gateway costs: pending API contract
+## Gateway-recorded costs
 
-No gateway billing adapter or actual-cost UI is implemented yet. Before adding
-one, establish:
+The optional Datadog adapter uses an existing authenticated `pup` CLI to read
+personal legacy-gateway audit costs. Create the private, launch-scoped
+`gateway-spend.json` in **this personal profile** using the schema/example in
+[Gateway-recorded spend](architecture/gateway-spend.md). Use an absolute CLI path
+and your own source query/identity/gateway allowlist; no credentials belong in
+this file. Restart the personal fork to load it. Do not configure the installed
+app's profile or change your normal Pi provider settings.
 
-1. The gateway's supported usage/cost endpoint or event stream, authentication
-   mechanism, refresh limits, retention, and permission scope.
-2. A stable request ID and a supported way to attach the Pi session ID and
-   parent-session ID to requests, including sub-agents, summarization, tool-side
-   model calls, and retries. Do not infer attribution from names or time windows.
-3. The authoritative cost field, currency/unit, billed-versus-provisional state,
-   cache accounting, and whether responses are cumulative or request-level.
-4. A deduplication/reconciliation contract across retries, paging, relaunch, and
-   final gateway settlement. Copied conversation history is not new billed usage.
-5. A UI contract: show direct session spend and any child rollup separately,
-   distinguish gateway charges from estimates, and expose pending/stale/error
-   states with an as-of time. Missing data must never appear as a known `$0`.
+- The sidebar total is the **previous completed calendar month in UTC**, across
+  all harnesses/personal keys in that gateway source. Open it for exact bounds,
+  source/scope, record counts, refresh and as-of/error/stale information. It is
+  not an all-subscription total or provider-invoice reconciliation.
+- Open the title-bar context ring for **direct session gateway spend**. Supported
+  OpenAI Responses requests are tagged prospectively only after their actual
+  destination matches the configured gateway; redirects cannot forward tags.
+- Session coverage is always **Partial**, with **Tracked since …**. Other APIs,
+  arbitrary extension calls and external subagents may be untracked. Children
+  are excluded; there is no double-counting parent rollup.
+- Older sessions without attribution say **Not tracked**. Newly tracked sessions
+  with no audit records say **Awaiting audit logs**. Missing/failed/unpriced data
+  never becomes a guessed `$0` or a model-catalog estimate. Real zero-cost
+  records can legitimately show zero; positive sub-cent amounts stay distinct.
+- Refresh is cached and bounded (sixty-second minimum, hourly monthly refresh).
+  A failed read retains the last good value visibly stale, never as current.
+
+Attribution markers and the aggregate cache live only under the personal profile;
+no session history is rewritten, and no model request is made by cost reads.
+`?spendDemo=1` in the browser preview supplies synthetic cost data without real
+Datadog access, just as `?sidebarDemo=1` supplies synthetic saved rows. The two
+flags can be combined for UI-only exploration.
 
 Keep credentials and gateway access in main/host code, not the renderer or session
 history. This fork is public: do not commit private gateway URLs, credentials,
-request logs, or user-specific billing data. Keep deployment-specific values in
-local configuration.
+request logs, or user-specific billing data. Deployment-specific values remain
+in local configuration.
 
 ## Packaging later
 

@@ -5,6 +5,7 @@ import type {
   ExtensionUpdateStatus,
   ExtensionUpdateTarget,
 } from "./extension-updates.js";
+import type { GatewaySpendResult } from "./gateway-spend.js";
 import type {
   GitBranchesResult,
   GitChangedFile,
@@ -554,6 +555,12 @@ export interface IpcInvokeContract {
       error?: string;
     };
     res: { ok: boolean };
+  };
+  /** Read-only, main-configured personal audit queries; no renderer query/path input. */
+  "gatewaySpend.month": { req: { refresh?: boolean }; res: GatewaySpendResult };
+  "gatewaySpend.session": {
+    req: { sessionId: SessionId; refresh?: boolean };
+    res: GatewaySpendResult;
   };
   "settings.get": { req: undefined; res: AppSettings };
   "settings.set": { req: Partial<AppSettings>; res: AppSettings };

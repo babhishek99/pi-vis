@@ -131,6 +131,19 @@ return, so caller mutation cannot change future classifications. Settings-only
 `sessionGroups` never enter the runtime authority or session JSONL. See
 [sidebar organization](sidebar-shell-layout.md#session-groups-and-sub-agent-visibility).
 
+## Gateway spend is a separate read model
+
+Optional gateway spend is main-owned audit presentation, not semantic authority,
+Pi statistics or transcript reconstruction. Direct attribution uses the SDK's
+persisted session UUID (hashed in headers/sidecar filenames), not the renderer
+registry ID, epoch, session name, group or inferred time overlap. The host writes
+only private profile metadata; no instrumentation/cost entry touches JSONL.
+Main fences a delayed read when its registry record/file or bounded header UUID
+changes; renderer presentation is likewise request-generation keyed. New UUIDs
+never inherit copied-history costs, while branch navigation retains one direct
+billing identity. No parent/child rollup exists, and incomplete/historical
+coverage remains explicit. See `docs/architecture/gateway-spend.md`.
+
 ## History and transcript
 
 Semantic session replacements publish their committed main-owned transport

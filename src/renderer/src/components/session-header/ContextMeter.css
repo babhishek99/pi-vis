@@ -63,7 +63,11 @@
   top: calc(100% + 0.429rem);
   right: 0;
   z-index: 100;
-  min-width: 22rem;
+  min-width: min(22rem, calc(100vw - 2rem));
+  max-width: calc(100vw - 2rem);
+  max-height: calc(100dvh - 5rem);
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 0.714rem 0.857rem;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -92,6 +96,7 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 0.857rem;
   white-space: nowrap;
 }

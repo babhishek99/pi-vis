@@ -1,5 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import {
+  GatewaySessionSpendRequestSchema,
+  GatewaySpendRequestSchema,
+} from "@shared/gateway-spend.js";
 import type { SessionId } from "@shared/ids.js";
 import type { SessionStatus, WorktreeIdentity } from "@shared/ipc-contract.js";
 import type { PiEvent } from "@shared/pi-protocol/events.js";
@@ -31,6 +35,7 @@ import {
 import {
   getAuthStatus,
   getLoginShellEnv,
+  getSubprocessEnv,
   publishAuthStatusForSettingsUpdate,
   removeProvider,
   saveApiKey,
@@ -44,6 +49,8 @@ import {
   runExtensionUpdate,
 } from "./extension-updates.js";
 import { openValidatedExternalWebUrl } from "./external-links.js";
+import { GatewaySpendService } from "./gateway-spend/service.js";
+import { captureSessionSpendTarget } from "./gateway-spend/session-target.js";
 import {
   type CheckoutChangesSnapshot,
   type CheckoutIdentity,
@@ -107,6 +114,7 @@ const activeWorktreeOperations = new Set<SessionId>();
 const lastWorktreeOperationErrors = new Map<SessionId, string>();
 const reservedCreatedWorktrees = new Map<string, SessionId>();
 let sessionSearchService: SessionSearchService | null = null;
+let gatewaySpendService: GatewaySpendService | null = null;
 let stopAllSessionsPromise: Promise<void> | null = null;
 
 function isClosedHostTransportError(error: unknown): boolean {
@@ -153,6 +161,9 @@ async function getHostEnv(): Promise<Record<string, string>> {
       activeAppearance,
     ),
     PIVIS_PI_THEME_COLORS: JSON.stringify(piThemeColorIndices()),
+    // Explicitly blank inherited values when disabled. The private query,
+    // user identity and pup authentication never enter SDK-host environment.
+    PIVIS_GATEWAY_SPEND: (await gatewaySpendService?.hostAttributionEnvironment()) ?? "",
   };
 }
 
@@ -329,6 +340,10 @@ export function initIpc(win: BrowserWindow): void {
   mainWindow = win;
   if (handlersRegistered) return;
   handlersRegistered = true;
+  gatewaySpendService = new GatewaySpendService({
+    directory: app.getPath("userData"),
+    getEnv: getSubprocessEnv,
+  });
 
   eventBatcher = createEventBatcher((payload) => safeSend("session.events", payload));
   const testUnifiedClaimTimeoutMs = Number.parseInt(
@@ -1612,6 +1627,17 @@ export function initIpc(win: BrowserWindow): void {
       ) ?? { accepted: false },
   );
 
+  ipcMain.handle("gatewaySpend.month", async (_evt, args: unknown) => {
+    const { refresh } = GatewaySpendRequestSchema.parse(args);
+    return gatewaySpendService!.month(refresh);
+  });
+
+  ipcMain.handle("gatewaySpend.session", async (_evt, args: unknown) => {
+    const { sessionId, refresh } = GatewaySessionSpendRequestSchema.parse(args);
+    const target = captureSessionSpendTarget(() => registry?.getSession(sessionId as SessionId));
+    return gatewaySpendService!.session(target.file, target.isCurrent, refresh);
+  });
+
   ipcMain.handle("settings.get", async () => {
     return getSettings();
   });
@@ -1915,6 +1941,7 @@ export function stopAllSessions(): Promise<void> {
     const activeRegistry = registry;
 
     const shutdownTasks: Promise<unknown>[] = [];
+    if (gatewaySpendService) shutdownTasks.push(gatewaySpendService.stop());
     if (searchService) {
       try {
         shutdownTasks.push(searchService.stop());

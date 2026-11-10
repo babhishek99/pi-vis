@@ -1,3 +1,4 @@
+import { type GatewaySpendResult, previousUtcMonth } from "@shared/gateway-spend.js";
 import type { SessionId } from "@shared/ids.js";
 import type { IpcInvokeContract, SessionSummary } from "@shared/ipc-contract.js";
 import type { ExtensionUiRequest } from "@shared/pi-protocol/extension-ui.js";
@@ -30,6 +31,37 @@ const DEMO_SESSION_ID = "demo-session-1" as SessionId;
 const DEMO_WORKSPACE = "/Users/demo/src/pi-vis";
 const DEMO_MODEL = "deepseek/deepseek-v4-flash";
 const DEMO_NON_REASONING_MODEL = "claude-fable-5";
+
+const spendDemoEnabled = new URLSearchParams(window.location.search).get("spendDemo") === "1";
+
+/** Synthetic examples only. Neither preview handler can contact a billing source. */
+function previewGatewaySpend(scope: GatewaySpendResult["scope"]): GatewaySpendResult {
+  const now = new Date();
+  const session = scope === "direct_session_partial";
+  const trackedSince = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+  return {
+    state: spendDemoEnabled ? "ready" : "not_configured",
+    scope,
+    source: "Datadog gateway audit logs",
+    period: spendDemoEnabled
+      ? session
+        ? { start: trackedSince, endExclusive: now.toISOString(), timeZone: "UTC" }
+        : previousUtcMonth(now)
+      : null,
+    snapshot: spendDemoEnabled
+      ? {
+          amountUsd: session ? 1.18 : 42.75,
+          pricedRequests: session ? 4 : 128,
+          unpricedRequests: session ? 0 : 3,
+          asOf: now.toISOString(),
+        }
+      : null,
+    trackedSince: spendDemoEnabled && session ? trackedSince : null,
+    stale: false,
+    issue: null,
+    nextRefreshAt: spendDemoEnabled ? new Date(now.getTime() + 60_000).toISOString() : null,
+  };
+}
 
 // Opt-in manual test drive; these are synthetic paths, never filesystem reads.
 const sidebarDemoEnabled = new URLSearchParams(window.location.search).get("sidebarDemo") === "1";
@@ -1762,6 +1794,10 @@ const stub = {
           ok: true,
           markdown: "# Preview changelog heading\n\nPreview changelog body.",
         };
+      case "gatewaySpend.month":
+        return previewGatewaySpend("personal_gateway");
+      case "gatewaySpend.session":
+        return previewGatewaySpend("direct_session_partial");
       case "extensionUpdates.status":
         return previewExtensionUpdateStatus;
       case "extensionUpdates.check": {

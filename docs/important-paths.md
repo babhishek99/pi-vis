@@ -14,6 +14,12 @@
 | `src/main/sessions/session-registry.ts` | Snapshot lease/availability, lifecycle, activation-visit retirement, acknowledgements, and two-phase close; it has no fixed process-cap refusal. |
 | `src/main/sessions/session-search/` | Planned worker-owned persisted-JSONL catalog, disposable SQLite index, query, and exact read-only context implementation. |
 | `src/main/ipc.ts` | Typed renderer↔main handler registration and host event forwarding. |
+| `src/main/gateway-spend/` | Optional read-only Datadog audit aggregates, private launch config, cache and rate limits. |
+| `src/shared/gateway-spend.ts` | Bounded spend IPC read model and completed-UTC-month helper. |
+| `resources/pi-session-host/gateway-spend.mjs` | Public-transport destination-gated prospective direct-session tagging. |
+| `<userData>/gateway-spend.json` | Private opt-in deployment/identity configuration; never renderer settings. |
+| `<userData>/gateway-spend/v1/` | Scope-hashed aggregate cache and metadata-only tracking markers; no transcripts. |
+| `docs/architecture/gateway-spend.md` | Source scope, safety, coverage, privacy and refresh contract. |
 | `src/shared/ipc-contract.ts` | Typed IPC boundary. |
 | `src/shared/pi-protocol/runtime-state.ts` | Snapshot, disposition, transition, escape, and runtime-state schemas. |
 | `src/renderer/src/stores/sessions-store.ts` | Renderer projection of runtime authority plus presentation state. |

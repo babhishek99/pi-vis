@@ -47,6 +47,7 @@ import {
 } from "./bootstrap.mjs";
 import { assertHostCapabilities, setupCommandBridge } from "./bridge.mjs";
 import { buildEditorTheme } from "./editor-theme.mjs";
+import { withGatewaySpendAttribution } from "./gateway-spend.mjs";
 import { createIpcSendQueue } from "./ipc-send-queue.mjs";
 import { createPanelReconstruction } from "./panel-reconstruction.mjs";
 import { migrateLegacyAzureCredential } from "./pi-compatibility.mjs";
@@ -669,6 +670,14 @@ async function handleInit(msg) {
         },
         resourceLoaderReloadOptions: { resolveProjectTrust: resolveTrust },
       });
+      // Services have finished registering managed providers. Decorate only
+      // the public runtime shared by this manager's session and returned services;
+      // endpoint validation happens later at the actual provider fetch boundary.
+      services.modelRuntime = withGatewaySpendAttribution(
+        services.modelRuntime,
+        sm,
+        process.env.PIVIS_GATEWAY_SPEND,
+      );
       // Terminal image capability overrides are settings-scoped in Pi 0.84.4+
       // and pi-tui exposes a public process-global setter. Apply them on every
       // factory invocation so session replacement/rebind cannot retain stale

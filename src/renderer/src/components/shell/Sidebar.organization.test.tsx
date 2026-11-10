@@ -18,6 +18,19 @@ let failWrites = false;
 let persisted = structuredClone(defaultSettings);
 const invoke = vi.fn(async (channel: string, payload?: Record<string, unknown>) => {
   if (channel === "workspace.list" || channel === "themes.listUser") return [];
+  if (channel === "gatewaySpend.month") {
+    return {
+      state: "not_configured",
+      scope: "personal_gateway",
+      source: "Datadog gateway audit logs",
+      period: null,
+      snapshot: null,
+      trackedSince: null,
+      stale: false,
+      issue: null,
+      nextRefreshAt: null,
+    };
+  }
   if (channel === "settings.get") return persisted;
   if (channel === "settings.set") {
     if (failWrites) throw new Error("fixture write failure");
@@ -345,7 +358,13 @@ describe("sidebar session organization", () => {
     expect(persisted.pinnedSessions).toEqual([]);
     expect(
       invoke.mock.calls.every(([channel]) =>
-        ["settings.get", "settings.set", "workspace.list", "themes.listUser"].includes(channel),
+        [
+          "settings.get",
+          "settings.set",
+          "workspace.list",
+          "themes.listUser",
+          "gatewaySpend.month",
+        ].includes(channel),
       ),
     ).toBe(true);
   });

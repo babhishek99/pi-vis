@@ -112,6 +112,29 @@ warning color and attention dismissal across IPC. The opt-in browser URL
 `?sidebarDemo=1` supplies synthetic saved rows for manual group/visibility tests;
 its render test exercises create-and-assign without touching real session data.
 
+## Gateway-spend coverage (personal fork)
+
+`src/shared/gateway-spend.test.ts` checks completed UTC month boundaries
+(year/leap/timezone edges) and strict query/path-free billing IPC ingress.
+`src/main/gateway-spend/{config,datadog,service}.test.ts` exercises private
+launch configuration, bounded flex-aggregate parsing, missing versus explicit
+zero prices, personal identity constraints, exact inclusive query end,
+coalescing/rate limits, cache isolation/restart, non-accumulating refreshes,
+stale/errors, metadata corruption, and session/file/UUID transition fences.
+`src/main/bounded-process.test.ts` additionally checks pre-abort and live process
+group cancellation, including the main-quit-safe signal path.
+
+Host attribution tests run the public transport decorator with URL/redirect and
+header-immutability adversaries, private marker IO/failure/concurrency cases, and
+the real pinned SDK against a loopback provider. Renderer spend tests and
+`tests/render/gateway-spend.spec.mts` cover loading/partial/missing/free/stale/error
+presentation, sub-cent formatting, session-generation fencing, refresh bounds,
+focus/Escape and light/dark/narrow geometry. `tests/e2e/gateway-spend.spec.mts`
+uses an isolated profile and fake authenticated-CLI executable to exercise real
+billing IPC, private cache reuse and byte-identical fixture histories. Normal
+checks never query a real account or paid model. `?spendDemo=1` is synthetic only.
+See `docs/architecture/gateway-spend.md` for source and partial-coverage semantics.
+
 ## Workspace session-search coverage
 
 Search tests use a generated isolated JSONL corpus: two workspaces, a mapped worktree, more than 30 sessions, exact/prefix/camel/snake/path/typo cases, pre-compaction and alternate-branch-only matches, repeated occurrences, corrupt/intermediate rows, incomplete and appended rows, and an excluded archived source. Unit/integration coverage verifies catalog ownership/confinement, transactional append/rebuild/corruption/restart behavior, deterministic relevance (Recall@10, MRR, nDCG), generation fencing, revision-invalidated pagination, exact context relocation/stale outcomes, and opaque-target validation. Runtime-pin coverage exercises Linux `/proc/self/fd` policy independently from Darwin/Windows alias policy and opens the identity-verified hard link through the real pinned Pi `SessionManager`, proving repeated reads and appends stay on the validated inode. `resources/pi-session-host/session-lineage.test.mjs` additionally proves existing and normally deferred fork successors retain canonical lineage through atomic serialization plus public manager reload, while crafted source-path cases remain untouched. Electron/render coverage proves scope and worktree inclusion, sidebar-pagination independence, default-on/restart-scoped enablement, disabled-launch chrome suppression, ESC/focus behavior, preview's zero host/session side effects, and explicit open's normal activation-visit release behavior.

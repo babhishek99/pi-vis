@@ -25,6 +25,7 @@ import {
   IconRestart,
   IconSearch,
 } from "../common/icons.js";
+import { GatewayMonthSpend } from "../gateway-spend/GatewayMonthSpend.js";
 import { openSessionSearch } from "../session-search/SessionSearchModal.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { SessionGroupDialog } from "./SessionGroupDialog.js";
@@ -1342,6 +1343,7 @@ export function Sidebar({
           {sidebarError}
         </p>
       )}
+      <GatewayMonthSpend />
       <div className="sidebar__footer">
         <button type="button" className="sidebar__add-workspace" onClick={handleAddWorkspace}>
           <svg className="sidebar__add-icon" viewBox="0 0 24 24" aria-hidden="true">

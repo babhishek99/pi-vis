@@ -16,6 +16,19 @@ Cold activation shares one login-shell capture; once its child is created, the c
 
 Main initializes a synchronous, best-effort `<userData>/diagnostics.log` before creating windows or hosts. It records main-process `console.error` output and fatal exception stacks without suppressing Node's default crash behavior, renderer error-console/preload/process-loss diagnostics, Electron child-process loss, and each SDK host's stderr plus exit/error context. Host stderr is persisted as it arrives, so an uncaught host exception survives after the child exits. The text log is capped at approximately 5 MiB and rotates once to `diagnostics.log.1`. Electron Crashpad also remains enabled locally with uploads disabled; native main/renderer/GPU crashes may have a minidump in Electron's `crashDumps` directory when no JavaScript stack exists.
 
+## Optional gateway-spend reads
+
+`gatewaySpend.month` and `gatewaySpend.session` are bounded read-only billing
+invokes, independent of the authority-frame planes. Main owns private launch
+configuration, authenticated `pup` subprocesses, response validation, coalescing,
+cache and refresh limits; only sanitized aggregate read models enter renderer
+IPC. Session requests name a known registry ID, never a renderer-chosen path or
+query. The SDK host receives only a gateway allowlist and private marker directory,
+and uses public OpenAI Responses transport injection to tag allowed actual URLs.
+No cost state, credentials or instrumentation is written to session JSONL.
+App teardown aborts captures and prevents queued reads. See
+`docs/architecture/gateway-spend.md` for scope, incomplete coverage and safety.
+
 ## Workspace session search
 
 Workspace saved-session search is a separate typed, generation-fenced renderer→main→worker path. Its worker catalogs validated persisted JSONL, maintains a disposable SQLite index, and serves workspace/worktree-scoped queries and exact read-only context. It does not call the SDK host or `SessionRegistry`; selecting/previewing a result creates no host or runtime side effect. Opaque targets are scoped to their renderer/workspace, and late batches/context are fenced. Only explicit **Open session** revalidates a target and delegates to the ordinary stored-session open plus activation-visit lifecycle. Thus search adds no process cap, idle/LRU reaper, or ability to retire a pre-existing host. See [workspace session search](session-search.md).

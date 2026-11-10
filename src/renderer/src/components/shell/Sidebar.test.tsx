@@ -67,6 +67,45 @@ describe("Sidebar boot workspace restore", () => {
     document.body.innerHTML = "";
   });
 
+  it("places the monthly gateway widget immediately above the footer", async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === "workspace.list") return [];
+      if (channel === "gatewaySpend.month") {
+        return {
+          state: "ready",
+          scope: "personal_gateway",
+          source: "Datadog gateway audit logs",
+          period: {
+            start: "2026-09-01T00:00:00.000Z",
+            endExclusive: "2026-10-01T00:00:00.000Z",
+            timeZone: "UTC",
+          },
+          snapshot: {
+            amountUsd: 42.75,
+            pricedRequests: 12,
+            unpricedRequests: 0,
+            asOf: "2026-10-15T12:00:00.000Z",
+          },
+          trackedSince: null,
+          stale: false,
+          issue: null,
+          nextRefreshAt: null,
+        };
+      }
+      throw new Error(`Unexpected IPC channel ${channel}`);
+    });
+    (globalThis.window as unknown as { pivis?: unknown }).pivis = { invoke };
+    const { container, unmount } = mount(<Sidebar onOpenSettings={() => {}} />);
+    await flushEffects();
+    const widget = container.querySelector(".gateway-spend-month");
+    expect(widget).not.toBeNull();
+    expect(widget?.textContent).toContain("$42.75 USD");
+    expect(container.querySelector(".sidebar__footer")?.previousElementSibling).toBe(widget);
+    expect(invoke).toHaveBeenCalledWith("gatewaySpend.month", {});
+    expect(invoke.mock.calls.some(([channel]) => channel === "gatewaySpend.session")).toBe(false);
+    unmount();
+  });
+
   it("hides saved-session search actions when unavailable for this launch", async () => {
     const invoke = vi.fn(async (channel: string) => {
       if (channel === "workspace.list") return [WS_A];
