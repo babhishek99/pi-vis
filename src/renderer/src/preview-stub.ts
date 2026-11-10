@@ -1,4 +1,4 @@
-import { type GatewaySpendResult, previousUtcMonth } from "@shared/gateway-spend.js";
+import { type GatewaySpendResult, currentUtcMonth } from "@shared/gateway-spend.js";
 import type { SessionId } from "@shared/ids.js";
 import type { IpcInvokeContract, SessionSummary } from "@shared/ipc-contract.js";
 import type { ExtensionUiRequest } from "@shared/pi-protocol/extension-ui.js";
@@ -46,7 +46,7 @@ function previewGatewaySpend(scope: GatewaySpendResult["scope"]): GatewaySpendRe
     period: spendDemoEnabled
       ? session
         ? { start: trackedSince, endExclusive: now.toISOString(), timeZone: "UTC" }
-        : previousUtcMonth(now)
+        : currentUtcMonth(now)
       : null,
     snapshot: spendDemoEnabled
       ? {

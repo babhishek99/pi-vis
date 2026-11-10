@@ -53,13 +53,11 @@ export const GatewaySpendResultSchema = z.object({
 });
 export type GatewaySpendResult = z.infer<typeof GatewaySpendResultSchema>;
 
-/** Previous *completed* calendar month, with an exclusive UTC end boundary. */
-export function previousUtcMonth(now: Date): GatewaySpendPeriod {
-  const year = now.getUTCFullYear();
-  const month = now.getUTCMonth();
+/** Current UTC calendar month to date, with an exclusive coverage upper bound. */
+export function currentUtcMonth(now: Date): GatewaySpendPeriod {
   return {
-    start: new Date(Date.UTC(year, month - 1, 1)).toISOString(),
-    endExclusive: new Date(Date.UTC(year, month, 1)).toISOString(),
+    start: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(),
+    endExclusive: now.toISOString(),
     timeZone: "UTC",
   };
 }

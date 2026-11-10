@@ -105,7 +105,7 @@ describe("gateway spend service", () => {
     expect(f.query).not.toHaveBeenCalled();
   });
 
-  it("coalesces calls, uses explicit previous month UTC, never accumulates refreshed amounts and bounds refresh", async () => {
+  it("coalesces calls, uses current UTC month-to-date, never accumulates refreshed amounts and bounds refresh", async () => {
     const f = await fixture();
     const held = deferred<GatewaySpendSnapshot>();
     f.query.mockReturnValueOnce(held.promise);
@@ -122,17 +122,20 @@ describe("gateway spend service", () => {
       stale: false,
       snapshot: priced,
       period: {
-        start: "2026-10-01T00:00:00.000Z",
-        endExclusive: "2026-11-01T00:00:00.000Z",
+        start: "2026-11-01T00:00:00.000Z",
+        endExclusive: "2026-11-10T10:00:00.000Z",
         timeZone: "UTC",
       },
     });
     expect(f.query.mock.calls[0]![0]).not.toHaveProperty("sessionTag");
+    expect(f.query.mock.calls[0]![0].period).toEqual(a.period);
     await f.service.month(true);
     expect(f.query).toHaveBeenCalledTimes(1);
     f.advance(61_000);
     const refreshed = await f.service.month(true);
     expect(refreshed.snapshot?.amountUsd).toBe(priced.amountUsd);
+    expect(refreshed.period?.endExclusive).toBe("2026-11-10T10:01:01.000Z");
+    expect(refreshed.snapshot?.asOf).toBe(refreshed.period?.endExclusive);
     expect(f.query).toHaveBeenCalledTimes(2);
     const serialized = JSON.stringify(refreshed);
     for (const value of [
@@ -234,7 +237,7 @@ describe("gateway spend service", () => {
     expect(result).toMatchObject({
       state: "unavailable",
       snapshot: null,
-      period: { start: "2026-11-01T00:00:00.000Z", endExclusive: "2026-12-01T00:00:00.000Z" },
+      period: { start: "2026-12-01T00:00:00.000Z", endExclusive: "2026-12-02T10:00:00.000Z" },
     });
   });
 
@@ -248,7 +251,148 @@ describe("gateway spend service", () => {
     held.resolve(priced);
     const result = await pending;
     expect(f.query).toHaveBeenCalledTimes(2);
-    expect(result.period?.start).toBe("2026-11-01T00:00:00.000Z");
+    expect(result.period?.start).toBe("2026-12-01T00:00:00.000Z");
+    expect(result.period?.endExclusive).toBe("2026-12-02T10:00:00.000Z");
+    expect(result.snapshot?.asOf).toBe(result.period?.endExclusive);
+  });
+
+  it("never reuses the former completed-month cache as a current month-to-date total", async () => {
+    const f = await fixture();
+    const { trackingDirectory } = JSON.parse(await f.service.hostAttributionEnvironment());
+    const directory = path.dirname(trackingDirectory);
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      path.join(directory, "cache.json"),
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            key: sessionSpendTag("month:2026-11-01T00:00:00.000Z"),
+            period: {
+              start: "2026-11-01T00:00:00.000Z",
+              endExclusive: "2026-12-01T00:00:00.000Z",
+              timeZone: "UTC",
+            },
+            snapshot: { ...priced, amountUsd: 999 },
+          },
+        ],
+      }),
+    );
+    const result = await f.service.month();
+    expect(f.query).toHaveBeenCalledOnce();
+    expect(result.snapshot?.amountUsd).toBe(priced.amountUsd);
+    expect(result.period?.endExclusive).toBe("2026-11-10T10:00:00.000Z");
+  });
+
+  it.each([
+    { start: "2026-10-01T00:00:00.000Z", endExclusive: "2026-11-10T10:00:00.000Z" },
+    { start: "2026-11-01T00:00:00.000Z", endExclusive: "2026-12-01T00:00:00.000Z" },
+  ])("rejects a same-key cached range outside the current elapsed month (%s)", async (period) => {
+    const f = await fixture();
+    await f.service.month();
+    const { trackingDirectory } = JSON.parse(await f.service.hostAttributionEnvironment());
+    const cacheFile = path.join(path.dirname(trackingDirectory), "cache.json");
+    const cache = JSON.parse(await readFile(cacheFile, "utf8"));
+    cache.entries[0].period = { ...period, timeZone: "UTC" };
+    cache.entries[0].snapshot.amountUsd = 999;
+    await writeFile(cacheFile, JSON.stringify(cache));
+    const next = new GatewaySpendService({
+      directory: f.root,
+      query: f.query,
+      getEnv: f.getEnv,
+      now: () => new Date(priced.asOf),
+    });
+    stops.push(() => next.stop());
+    const result = await next.month();
+    expect(f.query).toHaveBeenCalledTimes(2);
+    expect(result.snapshot?.amountUsd).toBe(priced.amountUsd);
+    expect(result.period).toMatchObject({
+      start: "2026-11-01T00:00:00.000Z",
+      endExclusive: priced.asOf,
+    });
+  });
+
+  it("takes current-month coverage after queue and environment delay, not at admission", async () => {
+    const f = await fixture();
+    const tracked = await f.writeSession();
+    const held = deferred<GatewaySpendSnapshot>();
+    f.query.mockReturnValueOnce(held.promise);
+    const session = f.service.session(tracked.file, () => true);
+    await vi.waitFor(() => expect(f.query).toHaveBeenCalledTimes(1));
+    const environment = deferred<NodeJS.ProcessEnv>();
+    f.getEnv.mockReturnValueOnce(environment.promise);
+    const month = f.service.month();
+    await vi.waitFor(() => expect(Reflect.get(f.service, "inFlight").size).toBe(2));
+    f.advance(59_000);
+    held.resolve(priced);
+    await vi.waitFor(() => expect(f.getEnv).toHaveBeenCalledTimes(2));
+    f.advance(59_000);
+    environment.resolve({});
+    const result = await month;
+    await session;
+    expect(f.query.mock.calls[1]![0].period).toEqual({
+      start: "2026-11-01T00:00:00.000Z",
+      endExclusive: "2026-11-10T10:01:58.000Z",
+      timeZone: "UTC",
+    });
+    expect(result.snapshot?.asOf).toBe("2026-11-10T10:01:58.000Z");
+  });
+
+  it("skips a queued predecessor month after UTC rollover instead of storing the new range under its key", async () => {
+    const f = await fixture();
+    f.advance(Date.parse("2026-11-30T23:59:58.000Z") - Date.parse(priced.asOf));
+    const tracked = await f.writeSession();
+    const held = deferred<GatewaySpendSnapshot>();
+    f.query.mockReturnValueOnce(held.promise);
+    const session = f.service.session(tracked.file, () => true);
+    await vi.waitFor(() => expect(f.query).toHaveBeenCalledTimes(1));
+    const month = f.service.month();
+    await vi.waitFor(() => expect(Reflect.get(f.service, "inFlight").size).toBe(2));
+    f.advance(3_000);
+    held.resolve(priced);
+    const result = await month;
+    await session;
+    expect(f.query).toHaveBeenCalledTimes(2);
+    expect(f.query.mock.calls[1]![0].period).toEqual({
+      start: "2026-12-01T00:00:00.000Z",
+      endExclusive: "2026-12-01T00:00:01.000Z",
+      timeZone: "UTC",
+    });
+    expect(result.period?.start).toBe("2026-12-01T00:00:00.000Z");
+  });
+
+  it("ages slow month-to-date snapshots from queried coverage, not completion time", async () => {
+    const f = await fixture();
+    f.query.mockImplementationOnce(() => {
+      f.advance(60 * 60_000 + 1_000);
+      return Promise.resolve(priced);
+    });
+    const result = await f.service.month();
+    expect(result).toMatchObject({
+      state: "ready",
+      stale: true,
+      snapshot: { asOf: priced.asOf },
+      period: { endExclusive: priced.asOf },
+    });
+    await f.service.month();
+    expect(f.query).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows pending rather than querying an empty interval at the exact UTC month boundary", async () => {
+    const f = await fixture();
+    f.advance(Date.parse("2026-11-01T00:00:00.000Z") - Date.parse(priced.asOf));
+    expect(await f.service.month()).toMatchObject({
+      state: "pending",
+      snapshot: null,
+      period: {
+        start: "2026-11-01T00:00:00.000Z",
+        endExclusive: "2026-11-01T00:00:00.000Z",
+      },
+    });
+    expect(f.query).not.toHaveBeenCalled();
+    f.advance(61_000);
+    expect((await f.service.month()).state).toBe("ready");
+    expect(f.query).toHaveBeenCalledOnce();
   });
 
   it("does not infer historical session totals, and queries direct opaque IDs only after a marker exists", async () => {

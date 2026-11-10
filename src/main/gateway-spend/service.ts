@@ -8,7 +8,7 @@ import {
   type GatewaySpendResult,
   type GatewaySpendSnapshot,
   GatewaySpendSnapshotSchema,
-  previousUtcMonth,
+  currentUtcMonth,
 } from "@shared/gateway-spend.js";
 import { z } from "zod";
 import { boundedProcessFailureKind } from "../bounded-process.js";
@@ -132,21 +132,25 @@ export class GatewaySpendService {
   }
 
   async month(refresh = false): Promise<GatewaySpendResult> {
-    const period = previousUtcMonth(this.now());
-    const base = emptyResult("personal_gateway", period);
     const loaded = await this.configuration;
+    const period = currentUtcMonth(this.now());
+    const base = emptyResult("personal_gateway", period);
     if (loaded.state !== "configured") return this.unconfigured(base, loaded);
+    // At the exact UTC boundary no time has elapsed; do not query an inverted
+    // inclusive Datadog range or turn the empty interval into a known $0.
+    if (period.start === period.endExclusive) return { ...base, state: "pending" };
     const result = await this.read(
       loaded,
       base,
-      `month:${period.start}`,
-      period,
+      // Separate semantics from the older completed-month cache namespace.
+      `month-to-date:${period.start}`,
+      () => currentUtcMonth(this.now()),
       MONTH_TTL_MS,
       refresh,
     );
-    // A slow audit read can cross midnight on the first of the month. Do not
-    // publish the prior reporting month as the newly completed month's total.
-    if (previousUtcMonth(this.now()).start !== period.start) return this.month();
+    // A slow/queued read may cross midnight on the first of the month. Never
+    // publish a predecessor amount as the new current month's total.
+    if (currentUtcMonth(this.now()).start !== period.start) return this.month();
     return result;
   }
 
@@ -265,7 +269,7 @@ export class GatewaySpendService {
     loaded: Extract<LoadedGatewaySpendConfig, { state: "configured" }>,
     base: GatewaySpendResult,
     identity: string,
-    period: GatewaySpendPeriod | (() => GatewaySpendPeriod),
+    period: () => GatewaySpendPeriod,
     ttl: number,
     refresh: boolean,
     sessionTag?: string,
@@ -278,21 +282,26 @@ export class GatewaySpendService {
     const key = sessionSpendTag(identity);
     const existingFlight = this.inFlight.get(key);
     if (existingFlight) return existingFlight;
-    const cached = this.cache.get(key);
     const attempt = this.attempts.get(key);
     const now = this.now().getTime();
-    const requestedPeriod = typeof period === "function" ? period() : period;
+    const requestedPeriod = base.period ?? period();
+    const candidate = this.cache.get(key);
+    // A disposable cache cannot widen a month/session scope or include time
+    // that has not elapsed (including a former full-month cache or clock jump).
+    const cached =
+      candidate &&
+      candidate.period.start === requestedPeriod.start &&
+      Date.parse(candidate.period.endExclusive) > Date.parse(candidate.period.start) &&
+      Date.parse(candidate.period.endExclusive) <= now
+        ? candidate
+        : undefined;
     const lastAttempt = attempt?.at ?? (cached ? Date.parse(cached.snapshot.asOf) : 0);
     const nextRefreshAt =
       lastAttempt > 0 ? new Date(lastAttempt + MIN_REFRESH_MS).toISOString() : null;
-    // Old caches may stamp completion after the queried session upper bound.
-    // Neither queue/query delay nor a restart can grant those excluded minutes
-    // a new freshness window.
+    // Neither queue/query delay nor a restart can grant excluded minutes a
+    // new freshness window, for current-month and direct-session reads alike.
     const coveredThrough = cached
-      ? Math.min(
-          Date.parse(cached.snapshot.asOf),
-          sessionTag ? Date.parse(cached.period.endExclusive) : Number.POSITIVE_INFINITY,
-        )
+      ? Math.min(Date.parse(cached.snapshot.asOf), Date.parse(cached.period.endExclusive))
       : 0;
     const fresh = cached && now >= coveredThrough && now - coveredThrough < ttl;
     const fromCache = (): GatewaySpendResult => ({
@@ -328,9 +337,17 @@ export class GatewaySpendService {
         this.controller.signal.throwIfAborted();
         const env = await this.options.getEnv();
         this.controller.signal.throwIfAborted();
-        // Resolve live-session bounds only when this serialized job dispatches,
-        // after any queue/environment delay. Completed-month bounds stay fixed.
-        const queryPeriod = typeof period === "function" ? period() : period;
+        // Resolve month-to-date/session coverage only when this serialized job
+        // dispatches, after queue/environment delay. A superseded month must
+        // not dispatch or store a successor range under its predecessor key;
+        // month() re-enters for the new generation after this job settles.
+        const queryPeriod = period();
+        if (
+          queryPeriod.start !== requestedPeriod.start ||
+          Date.parse(queryPeriod.endExclusive) <= Date.parse(queryPeriod.start)
+        ) {
+          return { ...base, state: "pending" };
+        }
         const queried = await this.query({
           config: loaded.config,
           period: queryPeriod,
@@ -341,7 +358,7 @@ export class GatewaySpendService {
         this.controller.signal.throwIfAborted();
         const snapshot = GatewaySpendSnapshotSchema.parse({
           ...queried,
-          asOf: sessionTag ? queryPeriod.endExclusive : this.now().toISOString(),
+          asOf: queryPeriod.endExclusive,
         });
         if ((snapshot.pricedRequests === 0) !== (snapshot.amountUsd === null))
           throw new InvalidGatewayAggregateError();

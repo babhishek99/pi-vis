@@ -34,7 +34,7 @@ export function spendValue(result: GatewaySpendResult | null): string {
 }
 
 export function spendMonth(result: GatewaySpendResult | null): string {
-  return result?.period ? MONTH.format(new Date(result.period.start)) : "Previous month";
+  return result?.period ? MONTH.format(new Date(result.period.start)) : "Current month";
 }
 
 function utc(value: string): string {
@@ -87,7 +87,9 @@ export function GatewaySpendDetails({
           Direct session only. No child rollups; untracked request paths are not included.
         </p>
       ) : (
-        <p className="gateway-spend__note">Personal legacy gateway · all harnesses</p>
+        <p className="gateway-spend__note">
+          Current month-to-date · Personal legacy gateway · all harnesses
+        </p>
       )}
       {result?.state === "not_tracked" && (
         <p className="gateway-spend__note">No direct gateway tracking record for this session.</p>

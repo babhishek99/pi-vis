@@ -142,27 +142,49 @@ process.stdout.write(JSON.stringify({ data: { buckets: [{ by: {}, computes }] },
     });
   let app: LaunchedElectronApplication | undefined;
   try {
+    const launchStartedAt = Date.now();
     app = await launch();
     const page = await app.firstWindow();
     const monthButton = page.getByRole("button", {
-      name: "Previous month gateway spend",
+      name: "Current month gateway spend",
       exact: true,
     });
     await expect(monthButton).toContainText("$12.35", { timeout: 20_000 });
     await monthButton.click();
     const monthlyDetails = page.getByRole("region", { name: "Monthly gateway spend details" });
-    await expect(monthlyDetails).toContainText("Personal legacy gateway · all harnesses");
+    await expect(monthlyDetails).toContainText(
+      "Current month-to-date · Personal legacy gateway · all harnesses",
+    );
     await expect(monthlyDetails).toContainText("UTC");
     await expect(monthlyDetails).toContainText("Datadog gateway audit logs");
-    await page.keyboard.press("Escape");
     const month = await page.evaluate(() => window.pivis.invoke("gatewaySpend.month", {}));
     expect(month.snapshot).toMatchObject({
       amountUsd: 12.345678,
       pricedRequests: 42,
       unpricedRequests: 0,
     });
-    expect(month.period?.timeZone).toBe("UTC");
+    if (!month.period || !month.snapshot) throw new Error("Missing MTD fixture snapshot");
+    const coveredUntil = new Date(month.period.endExclusive);
+    expect(coveredUntil.getTime()).toBeGreaterThanOrEqual(launchStartedAt);
+    expect(coveredUntil.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(month.period).toEqual({
+      start: new Date(
+        Date.UTC(coveredUntil.getUTCFullYear(), coveredUntil.getUTCMonth(), 1),
+      ).toISOString(),
+      endExclusive: month.snapshot.asOf,
+      timeZone: "UTC",
+    });
+    expect(
+      await monthlyDetails
+        .locator("time")
+        .evaluateAll((times) => times.map((time) => time.getAttribute("datetime"))),
+    ).toEqual(expect.arrayContaining([month.period.start, month.period.endExclusive]));
     expect(readCalls()).toHaveLength(2);
+    for (const args of readCalls()) {
+      expect(args).toContain(`--from=${month.period.start}`);
+      expect(args).toContain(`--to=${new Date(coveredUntil.getTime() - 1).toISOString()}`);
+    }
+    await page.keyboard.press("Escape");
 
     const session = await page.evaluate(
       async ({ workspace, trackedFile }) => {
@@ -242,10 +264,21 @@ process.stdout.write(JSON.stringify({ data: { buckets: [{ by: {}, computes }] },
     app = await launch();
     const reopened = await app.firstWindow();
     await expect(
-      reopened.getByRole("button", { name: "Previous month gateway spend", exact: true }),
+      reopened.getByRole("button", { name: "Current month gateway spend", exact: true }),
     ).toContainText("$12.35", { timeout: 20_000 });
     const cached = await reopened.evaluate(() => window.pivis.invoke("gatewaySpend.month", {}));
     expect(cached.snapshot).toEqual(month.snapshot);
+    expect(cached.period).toEqual(month.period);
+    await reopened
+      .getByRole("button", { name: "Current month gateway spend", exact: true })
+      .click();
+    const cachedDetails = reopened.getByRole("region", { name: "Monthly gateway spend details" });
+    await expect(cachedDetails).toContainText("Current month-to-date");
+    expect(
+      await cachedDetails
+        .locator("time")
+        .evaluateAll((times) => times.map((time) => time.getAttribute("datetime"))),
+    ).toEqual(expect.arrayContaining([month.period.start, month.period.endExclusive]));
     expect(readCalls()).toHaveLength(4);
     for (const [file, text] of originals) expect(fs.readFileSync(file, "utf8")).toBe(text);
   } finally {

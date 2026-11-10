@@ -17,7 +17,7 @@
 | `src/main/sessions/session-search/` | Planned worker-owned persisted-JSONL catalog, disposable SQLite index, query, and exact read-only context implementation. |
 | `src/main/ipc.ts` | Typed renderer↔main handler registration and host event forwarding. |
 | `src/main/gateway-spend/` | Optional read-only Datadog audit aggregates, private launch config, cache and rate limits. |
-| `src/shared/gateway-spend.ts` | Bounded spend IPC read model and completed-UTC-month helper. |
+| `src/shared/gateway-spend.ts` | Bounded spend IPC read model and current-UTC-month-to-date helper. |
 | `resources/pi-session-host/gateway-spend.mjs` | Public-transport destination-gated prospective direct-session tagging. |
 | `<userData>/gateway-spend.json` | Private opt-in deployment/identity configuration; never renderer settings. |
 | `<userData>/gateway-spend/v1/` | Scope-hashed aggregate cache and metadata-only tracking markers; no transcripts. |

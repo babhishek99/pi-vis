@@ -1,4 +1,4 @@
-import { type GatewaySpendResult, previousUtcMonth } from "@shared/gateway-spend.js";
+import { type GatewaySpendResult, currentUtcMonth } from "@shared/gateway-spend.js";
 import type { SessionId } from "@shared/ids.js";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useSessionsStore } from "../../stores/sessions-store.js";
@@ -133,16 +133,17 @@ function useSpendRead(scope: ReadScope, hourly = false): GatewaySpendRead {
 }
 
 export function useGatewayMonthSpend(): GatewaySpendRead {
-  const [periodKey, setPeriodKey] = useState(() => previousUtcMonth(new Date()).start);
+  const [periodKey, setPeriodKey] = useState(() => currentUtcMonth(new Date()).start);
   useEffect(() => {
     let timer: number | undefined;
     const schedule = (): void => {
       const now = new Date();
-      const currentKey = previousUtcMonth(now).start;
+      const currentKey = currentUtcMonth(now).start;
       if (currentKey !== periodKey) {
         setPeriodKey(currentKey);
         return;
       }
+      // The coverage end is the read's as-of, not the next reporting deadline.
       const deadline = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
       // A calendar month can exceed the platform's maximum timeout. Re-arm
       // the same deadline when capped, without polling or issuing a spend read.
@@ -157,9 +158,22 @@ export function useGatewayMonthSpend(): GatewaySpendRead {
       kind: "personal_gateway",
       // Check the clock too: an old read may settle before the deadline's
       // state update commits (or before its callback runs after system sleep).
-      isCurrent: () => previousUtcMonth(new Date()).start === periodKey,
-      invoke: (refresh) =>
-        window.pivis.invoke("gatewaySpend.month", refresh ? { refresh: true } : {}),
+      isCurrent: () => currentUtcMonth(new Date()).start === periodKey,
+      invoke: async (refresh) => {
+        const result = await window.pivis.invoke(
+          "gatewaySpend.month",
+          refresh ? { refresh: true } : {},
+        );
+        // A cache/transport response must belong to this month too. Never put
+        // a predecessor amount beneath a current-month fallback label.
+        if (
+          (result.period && result.period.start !== periodKey) ||
+          (result.snapshot && !result.period)
+        ) {
+          throw new Error("Unexpected spend period");
+        }
+        return result;
+      },
     }),
     [periodKey],
   );

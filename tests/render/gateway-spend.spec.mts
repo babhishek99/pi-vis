@@ -4,6 +4,18 @@ import type { GatewaySpendResult } from "../../src/shared/gateway-spend.js";
 import type { SessionId } from "../../src/shared/ids.js";
 
 const NOW = "2026-10-15T12:00:00.000Z";
+const NOVEMBER_NOW = "2026-11-30T23:59:00.000Z";
+const DECEMBER_NOW = "2026-12-01T00:00:01.000Z";
+const NOVEMBER_PERIOD = {
+  start: "2026-11-01T00:00:00.000Z",
+  endExclusive: NOVEMBER_NOW,
+  timeZone: "UTC" as const,
+};
+const DECEMBER_PERIOD = {
+  start: "2026-12-01T00:00:00.000Z",
+  endExclusive: DECEMBER_NOW,
+  timeZone: "UTC" as const,
+};
 
 function spend(overrides: Partial<GatewaySpendResult> = {}): GatewaySpendResult {
   return {
@@ -11,11 +23,16 @@ function spend(overrides: Partial<GatewaySpendResult> = {}): GatewaySpendResult 
     scope: "personal_gateway",
     source: "Datadog gateway audit logs",
     period: {
-      start: "2026-09-01T00:00:00.000Z",
-      endExclusive: "2026-10-01T00:00:00.000Z",
+      start: "2026-10-01T00:00:00.000Z",
+      endExclusive: NOW,
       timeZone: "UTC",
     },
-    snapshot: { amountUsd: 42.75, pricedRequests: 12, unpricedRequests: 0, asOf: NOW },
+    snapshot: {
+      amountUsd: 42.75,
+      pricedRequests: 12,
+      unpricedRequests: 0,
+      asOf: overrides.period?.endExclusive ?? NOW,
+    },
     trackedSince: null,
     stale: false,
     issue: null,
@@ -34,6 +51,8 @@ type SpendFixtures = {
   calls: Array<{ channel: string; request: unknown }>;
   holdSession: boolean;
   pending: Array<{ resolve(result: GatewaySpendResult): void }>;
+  holdMonth: boolean;
+  pendingMonths: Array<{ resolve(result: GatewaySpendResult): void }>;
   failNextMonth: boolean;
 };
 
@@ -48,8 +67,13 @@ type PreviewWindow = {
 };
 
 /** Replaces only the two spend invokes before React mounts. No billing network exists here. */
-async function fixtures(page: Page, month = spend(), session = sessionSpend()): Promise<void> {
-  await page.clock.install({ time: new Date(NOW) });
+async function fixtures(
+  page: Page,
+  month = spend(),
+  session = sessionSpend(),
+  now = NOW,
+): Promise<void> {
+  await page.clock.install({ time: new Date(now) });
   await page.addInitScript(
     ({ month, session }) => {
       const controls: SpendFixtures = {
@@ -58,6 +82,8 @@ async function fixtures(page: Page, month = spend(), session = sessionSpend()): 
         calls: [],
         holdSession: false,
         pending: [],
+        holdMonth: false,
+        pendingMonths: [],
         failNextMonth: false,
       };
       Reflect.set(window, "__spendFixtures", controls);
@@ -86,6 +112,11 @@ async function fixtures(page: Page, month = spend(), session = sessionSpend()): 
                 if (channel === "gatewaySpend.session" && controls.holdSession) {
                   return new Promise<GatewaySpendResult>((resolve) =>
                     controls.pending.push({ resolve }),
+                  );
+                }
+                if (channel === "gatewaySpend.month" && controls.holdMonth) {
+                  return new Promise<GatewaySpendResult>((resolve) =>
+                    controls.pendingMonths.push({ resolve }),
                   );
                 }
                 if (channel === "gatewaySpend.month" && controls.failNextMonth) {
@@ -135,6 +166,21 @@ async function resolveRead(page: Page, index: number, result: GatewaySpendResult
   );
 }
 
+async function resolveMonthRead(
+  page: Page,
+  index: number,
+  result: GatewaySpendResult,
+): Promise<void> {
+  await page.evaluate(
+    ({ index, result }) => {
+      const pending = (window as unknown as PreviewWindow).__spendFixtures.pendingMonths[index];
+      if (!pending) throw new Error("Missing deferred month fixture");
+      pending.resolve(result);
+    },
+    { index, result },
+  );
+}
+
 async function changeFile(page: Page, file: string): Promise<void> {
   await page.evaluate((file) => {
     const store = (window as unknown as PreviewWindow).__pivisStore;
@@ -166,7 +212,7 @@ test("preview defaults are not configured and the opt-in demo is entirely synthe
   expect(disabled.session.state).toBe("not_configured");
 
   await boot(page, "/?spendDemo=1");
-  await expect(page.getByRole("button", { name: "Previous month gateway spend" })).toContainText(
+  await expect(page.getByRole("button", { name: "Current month gateway spend" })).toContainText(
     "$42.75 USD",
   );
   await page.locator(".context-ring").click();
@@ -175,19 +221,19 @@ test("preview defaults are not configured and the opt-in demo is entirely synthe
   const demo = await page.evaluate(() => window.pivis.invoke("gatewaySpend.month", {}));
   const now = new Date(NOW);
   expect(demo.period).toEqual({
-    start: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1)).toISOString(),
-    endExclusive: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(),
+    start: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(),
+    endExclusive: NOW,
     timeZone: "UTC",
   });
 });
 
-test("monthly disclosure is subdued footer chrome with source, scope, UTC bounds and keyboard ownership", async ({
+test("current MTD disclosure is subdued footer chrome with source, scope, UTC bounds and keyboard ownership", async ({
   page,
 }) => {
   await fixtures(page);
   await boot(page);
-  const trigger = page.getByRole("button", { name: "Previous month gateway spend" });
-  await expect(trigger).toContainText("Gateway · Sep 2026");
+  const trigger = page.getByRole("button", { name: "Current month gateway spend" });
+  await expect(trigger).toContainText("Gateway · Oct 2026 · MTD");
   await expect(trigger).toContainText("$42.75 USD");
   expect(
     await trigger.evaluate((button) => button.closest("section")?.nextElementSibling?.className),
@@ -200,10 +246,12 @@ test("monthly disclosure is subdued footer chrome with source, scope, UTC bounds
   await trigger.focus();
   await page.keyboard.press("Enter");
   const details = page.getByRole("region", { name: "Monthly gateway spend details" });
-  await expect(details).toContainText("Personal legacy gateway · all harnesses");
+  await expect(details).toContainText(
+    "Current month-to-date · Personal legacy gateway · all harnesses",
+  );
   await expect(details).toContainText("Datadog gateway audit logs");
-  await expect(details).toContainText("From (UTC)2026-09-01 00:00:00 UTC");
-  await expect(details).toContainText("Until (exclusive, UTC)2026-10-01 00:00:00 UTC");
+  await expect(details).toContainText("From (UTC)2026-10-01 00:00:00 UTC");
+  await expect(details).toContainText("Until (exclusive, UTC)2026-10-15 12:00:00 UTC");
   await expect(details).toContainText("As of2026-10-15 12:00:00 UTC");
   await expect(details).toContainText("Gateway-recorded USD, not an invoice or token estimate.");
   await expect(trigger.locator(".fade-text")).toHaveCount(2);
@@ -218,6 +266,120 @@ test("monthly disclosure is subdued footer chrome with source, scope, UTC bounds
   expect(await calls(page, "gatewaySpend.month")).toHaveLength(1);
 });
 
+test("cached MTD details retain their actual upper bound and as-of as the clock advances", async ({
+  page,
+}) => {
+  const asOf = "2026-10-15T11:15:00.000Z";
+  await fixtures(
+    page,
+    spend({
+      period: { start: "2026-10-01T00:00:00.000Z", endExclusive: asOf, timeZone: "UTC" },
+    }),
+  );
+  await boot(page);
+  await page.clock.fastForward(30 * 60_000);
+  const trigger = page.getByRole("button", { name: "Current month gateway spend" });
+  await expect(trigger).toContainText("Gateway · Oct 2026 · MTD");
+  await trigger.click();
+  const details = page.getByRole("region", { name: "Monthly gateway spend details" });
+  await expect(details).toContainText("Until (exclusive, UTC)2026-10-15 11:15:00 UTC");
+  await expect(details).toContainText("As of2026-10-15 11:15:00 UTC");
+  expect(await calls(page, "gatewaySpend.month")).toHaveLength(1);
+});
+
+test("missing MTD data uses a current-month fallback without inventing a period or zero", async ({
+  page,
+}) => {
+  await fixtures(
+    page,
+    spend({ state: "unavailable", period: null, snapshot: null, issue: "timeout" }),
+  );
+  await boot(page);
+  const trigger = page.getByRole("button", { name: "Current month gateway spend" });
+  await expect(trigger).toContainText("Gateway · Current month · MTD");
+  await expect(trigger).toContainText("Unavailable");
+  await trigger.click();
+  const details = page.getByRole("region", { name: "Monthly gateway spend details" });
+  await expect(details).toContainText("PeriodUnavailable");
+  await expect(details).toContainText("As ofNo audit snapshot");
+  await expect(details).not.toContainText("$0");
+});
+
+test("UTC rollover retires November MTD, including a late refresh, while only December MTD may paint", async ({
+  page,
+}) => {
+  await fixtures(page, spend({ period: NOVEMBER_PERIOD }), sessionSpend(), NOVEMBER_NOW);
+  await boot(page);
+  const trigger = page.getByRole("button", { name: "Current month gateway spend" });
+  await expect(trigger).toContainText("Gateway · Nov 2026 · MTD");
+  await expect(trigger).toContainText("$42.75 USD");
+  await trigger.click();
+  const details = page.getByRole("region", { name: "Monthly gateway spend details" });
+  await page.evaluate(() => {
+    (window as unknown as PreviewWindow).__spendFixtures.holdMonth = true;
+  });
+  await details.getByRole("button", { name: "Refresh monthly gateway spend" }).click();
+  await expect.poll(async () => (await calls(page, "gatewaySpend.month")).length).toBe(2);
+  await page.clock.fastForward(61_000);
+  await expect.poll(async () => (await calls(page, "gatewaySpend.month")).length).toBe(3);
+  await expect(trigger).toContainText("Gateway · Current month · MTD");
+  await expect(details).toContainText("Reading audit logs");
+  await expect(details).not.toContainText("$42.75");
+  await expect(details).not.toContainText("2026-11-");
+  await resolveMonthRead(
+    page,
+    0,
+    spend({
+      period: NOVEMBER_PERIOD,
+      snapshot: { amountUsd: 999, pricedRequests: 1, unpricedRequests: 0, asOf: NOVEMBER_NOW },
+    }),
+  );
+  await expect(details).not.toContainText("$999");
+  await expect(details).toContainText("Reading audit logs");
+  await resolveMonthRead(
+    page,
+    1,
+    spend({
+      period: DECEMBER_PERIOD,
+      snapshot: { amountUsd: 8.5, pricedRequests: 2, unpricedRequests: 0, asOf: DECEMBER_NOW },
+    }),
+  );
+  await expect(trigger).toContainText("Gateway · Dec 2026 · MTD");
+  await expect(trigger).toContainText("$8.50 USD");
+  await expect(trigger).not.toContainText("Nov 2026");
+  await expect(details).toContainText("From (UTC)2026-12-01 00:00:00 UTC");
+  await expect(details).toContainText("Until (exclusive, UTC)2026-12-01 00:00:01 UTC");
+  await expect(details).toContainText("As of2026-12-01 00:00:01 UTC");
+  await expect(details).not.toContainText("$42.75");
+  expect(await calls(page, "gatewaySpend.month")).toHaveLength(3);
+});
+
+test("a new-month read cannot relabel an old November amount as December", async ({ page }) => {
+  await fixtures(page, spend({ period: NOVEMBER_PERIOD }), sessionSpend(), DECEMBER_NOW);
+  await boot(page);
+  const trigger = page.getByRole("button", { name: "Current month gateway spend" });
+  await expect(trigger).toContainText("Gateway · Current month · MTD");
+  await expect(trigger).not.toContainText("$42.75");
+  await trigger.click();
+  const details = page.getByRole("region", { name: "Monthly gateway spend details" });
+  await expect(details).toContainText("Gateway spend could not be read. Try refreshing.");
+  await expect(details).not.toContainText("2026-11-");
+  await page.evaluate(
+    (fresh) => {
+      (window as unknown as PreviewWindow).__spendFixtures.month = fresh;
+    },
+    spend({ period: DECEMBER_PERIOD }),
+  );
+  await details.getByRole("button", { name: "Refresh monthly gateway spend" }).click();
+  await expect(trigger).toContainText("Gateway · Dec 2026 · MTD");
+  await expect(details).toContainText("From (UTC)2026-12-01 00:00:00 UTC");
+  await expect(details).toContainText("As of2026-12-01 00:00:01 UTC");
+  expect(await calls(page, "gatewaySpend.month")).toEqual([
+    { channel: "gatewaySpend.month", request: {} },
+    { channel: "gatewaySpend.month", request: { refresh: true } },
+  ]);
+});
+
 test("missing prices are never zero, partial and stale/errors stay explicit, and manual refresh is sanitized", async ({
   page,
 }) => {
@@ -228,7 +390,7 @@ test("missing prices are never zero, partial and stale/errors stay explicit, and
     }),
   );
   await boot(page);
-  const trigger = page.getByRole("button", { name: "Previous month gateway spend" });
+  const trigger = page.getByRole("button", { name: "Current month gateway spend" });
   await expect(trigger).toContainText("No priced records · Partial");
   await trigger.click();
   const details = page.getByRole("region", { name: "Monthly gateway spend details" });
@@ -287,7 +449,7 @@ test("month refresh respects its deadline and is hourly, while an open session s
 }) => {
   await fixtures(page, spend({ nextRefreshAt: "2026-10-15T12:01:00.000Z" }));
   await boot(page);
-  await page.getByRole("button", { name: "Previous month gateway spend" }).click();
+  await page.getByRole("button", { name: "Current month gateway spend" }).click();
   const refresh = page.getByRole("button", { name: "Refresh monthly gateway spend" });
   await expect(refresh).toBeDisabled();
   await expect(page.locator(".gateway-spend__refresh-hint")).toContainText(
@@ -480,7 +642,7 @@ test("narrow light/dark layouts contain details, preserve footer reachability an
   );
   await page.setViewportSize({ width: 480, height: 400 });
   await boot(page);
-  const trigger = page.getByRole("button", { name: "Previous month gateway spend" });
+  const trigger = page.getByRole("button", { name: "Current month gateway spend" });
   await trigger.click();
   const details = page.getByRole("region", { name: "Monthly gateway spend details" });
   await expect(page.getByRole("button", { name: "Settings", exact: true })).toBeInViewport();

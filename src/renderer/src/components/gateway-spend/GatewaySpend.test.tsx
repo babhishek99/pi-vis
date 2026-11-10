@@ -14,12 +14,17 @@ const B = "spend-session-b" as SessionId;
 const NOW = "2026-10-15T12:00:00.000Z";
 const OCTOBER_PERIOD = {
   start: "2026-10-01T00:00:00.000Z",
-  endExclusive: "2026-11-01T00:00:00.000Z",
+  endExclusive: NOW,
   timeZone: "UTC" as const,
 };
 const NOVEMBER_PERIOD = {
   start: "2026-11-01T00:00:00.000Z",
-  endExclusive: "2026-12-01T00:00:00.000Z",
+  endExclusive: "2026-11-30T23:59:59.000Z",
+  timeZone: "UTC" as const,
+};
+const DECEMBER_PERIOD = {
+  start: "2026-12-01T00:00:00.000Z",
+  endExclusive: "2026-12-01T00:00:01.000Z",
   timeZone: "UTC" as const,
 };
 const roots = new Set<Root>();
@@ -29,12 +34,13 @@ function result(overrides: Partial<GatewaySpendResult> = {}): GatewaySpendResult
     state: "ready",
     scope: "personal_gateway",
     source: "Datadog gateway audit logs",
-    period: {
-      start: "2026-09-01T00:00:00.000Z",
-      endExclusive: "2026-10-01T00:00:00.000Z",
-      timeZone: "UTC",
+    period: OCTOBER_PERIOD,
+    snapshot: {
+      amountUsd: 42.75,
+      pricedRequests: 12,
+      unpricedRequests: 0,
+      asOf: overrides.period?.endExclusive ?? NOW,
     },
-    snapshot: { amountUsd: 42.75, pricedRequests: 12, unpricedRequests: 0, asOf: NOW },
     trackedSince: null,
     stale: false,
     issue: null,
@@ -102,6 +108,8 @@ function changeFile(sessionId: SessionId, file: string | undefined): void {
 let invoke = vi.fn();
 
 beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(NOW);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   invoke = vi.fn().mockResolvedValue(result());
   Object.defineProperty(window, "pivis", {
@@ -126,13 +134,17 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("monthly gateway spend", () => {
+describe("current month-to-date gateway spend", () => {
   it("reads once on mount and stays hidden when configuration is disabled", async () => {
     const pending = deferred<GatewaySpendResult>();
     invoke.mockReturnValue(pending.promise);
     const { container } = mount(<GatewayMonthSpend />);
+    expect(container.textContent).toContain("Gateway · Current month · MTD");
     expect(container.textContent).toContain("Reading audit logs");
     expect(container.textContent).not.toContain("$0");
+    expect(container.querySelector("button")?.getAttribute("aria-label")).toBe(
+      "Current month gateway spend",
+    );
     await act(async () => pending.resolve(result({ state: "not_configured", snapshot: null })));
     expect(container.textContent).toBe("");
     expect(invoke.mock.calls).toEqual([["gatewaySpend.month", {}]]);
@@ -154,21 +166,53 @@ describe("monthly gateway spend", () => {
     const { container } = mount(<GatewayMonthSpend />);
     await settle();
     const trigger = click(container, ".gateway-spend-month__trigger");
-    expect(trigger.textContent).toContain("Gateway · Sep 2026");
+    expect(trigger.textContent).toContain("Gateway · Oct 2026 · MTD");
     expect(trigger.textContent).toContain("$42.75 USD");
     expect(trigger.getAttribute("aria-controls")).toBe(
       container.querySelector('[role="region"]')?.id,
     );
-    expect(container.textContent).toContain("Personal legacy gateway · all harnesses");
+    expect(container.textContent).toContain(
+      "Current month-to-date · Personal legacy gateway · all harnesses",
+    );
     expect(container.textContent).toContain("Datadog gateway audit logs");
-    expect(container.textContent).toContain("From (UTC)2026-09-01 00:00:00 UTC");
-    expect(container.textContent).toContain("Until (exclusive, UTC)2026-10-01 00:00:00 UTC");
+    expect(container.textContent).toContain("From (UTC)2026-10-01 00:00:00 UTC");
+    expect(container.textContent).toContain("Until (exclusive, UTC)2026-10-15 12:00:00 UTC");
     expect(container.textContent).toContain("As of2026-10-15 12:00:00 UTC");
     expect(container.textContent).toContain("Checked");
     expect(container.textContent).toContain(
       "Gateway-recorded USD, not an invoice or token estimate.",
     );
     expect(invoke).toHaveBeenCalledTimes(1); // Opening is not a second query.
+  });
+
+  it("keeps the cached MTD coverage and as-of instead of advancing them with the wall clock", async () => {
+    const cachedPeriod = { ...OCTOBER_PERIOD, endExclusive: "2026-10-15T11:15:00.000Z" };
+    invoke.mockResolvedValue(result({ period: cachedPeriod }));
+    const { container } = mount(<GatewayMonthSpend />);
+    await settle();
+    await act(async () => vi.advanceTimersByTime(30 * 60_000));
+    const trigger = click(container, ".gateway-spend-month__trigger");
+    expect(trigger.textContent).toContain("Gateway · Oct 2026 · MTD");
+    expect(container.textContent).toContain("Until (exclusive, UTC)2026-10-15 11:15:00 UTC");
+    expect(container.textContent).toContain("As of2026-10-15 11:15:00 UTC");
+    expect(container.textContent).toContain("Checked2026-10-15 12:00:00 UTC");
+    expect(container.textContent).not.toContain("12:30:00");
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the current-month fallback when the read has no period or snapshot", async () => {
+    invoke.mockResolvedValue(
+      result({ state: "unavailable", period: null, snapshot: null, issue: "timeout" }),
+    );
+    const { container } = mount(<GatewayMonthSpend />);
+    await settle();
+    const trigger = click(container, ".gateway-spend-month__trigger");
+    expect(trigger.textContent).toContain("Gateway · Current month · MTD");
+    expect(trigger.textContent).toContain("Unavailable");
+    expect(container.textContent).toContain("PeriodUnavailable");
+    expect(container.textContent).toContain("As ofNo audit snapshot");
+    expect(container.textContent).not.toContain("$0");
+    expect(container.textContent).not.toContain("Previous month");
   });
 
   it.each([
@@ -227,6 +271,7 @@ describe("monthly gateway spend", () => {
     const { container } = mount(<GatewayMonthSpend />);
     await settle();
     click(container, ".gateway-spend-month__trigger");
+    expect(container.textContent).toContain("Gateway · Current month · MTD");
     expect(container.textContent).toContain("Unavailable");
     expect(container.textContent).toContain("Gateway spend could not be read. Try refreshing.");
     expect(container.textContent).not.toContain("private transport details");
@@ -251,9 +296,8 @@ describe("monthly gateway spend", () => {
     expect(invoke).toHaveBeenCalledTimes(2);
   });
 
-  it("starts exactly one new reporting-generation read at UTC month rollover and ignores the old flight", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime("2026-11-30T23:59:59.000Z");
+  it("starts exactly one December MTD read at UTC rollover and ignores the old November flight", async () => {
+    vi.setSystemTime(NOVEMBER_PERIOD.endExclusive);
     const oldRead = deferred<GatewaySpendResult>();
     const freshRead = deferred<GatewaySpendResult>();
     invoke.mockReturnValueOnce(oldRead.promise).mockReturnValueOnce(freshRead.promise);
@@ -271,53 +315,111 @@ describe("monthly gateway spend", () => {
       ["gatewaySpend.month", {}],
       ["gatewaySpend.month", {}],
     ]);
-    await act(async () => oldRead.resolve(result({ period: OCTOBER_PERIOD })));
+    await act(async () => oldRead.resolve(result({ period: NOVEMBER_PERIOD })));
+    expect(container.textContent).toContain("Gateway · Current month · MTD");
     expect(container.textContent).toContain("Reading audit logs");
     expect(container.textContent).not.toContain("$42.75");
-    expect(container.textContent).not.toContain("Oct 2026");
-    await act(async () => freshRead.resolve(result({ period: NOVEMBER_PERIOD })));
-    expect(container.textContent).toContain("Gateway · Nov 2026");
-    expect(container.textContent).toContain("$42.75 USD");
+    expect(container.textContent).not.toContain("Nov 2026");
+    await act(async () => vi.advanceTimersByTime(1000));
+    await act(async () =>
+      freshRead.resolve(
+        result({
+          period: DECEMBER_PERIOD,
+          snapshot: {
+            amountUsd: 8.5,
+            pricedRequests: 2,
+            unpricedRequests: 0,
+            asOf: DECEMBER_PERIOD.endExclusive,
+          },
+        }),
+      ),
+    );
+    expect(container.textContent).toContain("Gateway · Dec 2026 · MTD");
+    expect(container.textContent).toContain("$8.50 USD");
+    expect(container.textContent).not.toContain("$42.75");
+    click(container, ".gateway-spend-month__trigger");
+    expect(container.textContent).toContain("From (UTC)2026-12-01 00:00:00 UTC");
+    expect(container.textContent).toContain("Until (exclusive, UTC)2026-12-01 00:00:01 UTC");
     expect(invoke).toHaveBeenCalledTimes(2);
   });
 
-  it("hides a displayed predecessor amount at rollover and cleans up both monthly timers", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime("2026-11-30T23:59:59.000Z");
+  it("hides a displayed November amount at rollover and cleans up both monthly timers", async () => {
+    vi.setSystemTime(NOVEMBER_PERIOD.endExclusive);
     const freshRead = deferred<GatewaySpendResult>();
     invoke
-      .mockResolvedValueOnce(result({ period: OCTOBER_PERIOD }))
+      .mockResolvedValueOnce(result({ period: NOVEMBER_PERIOD }))
       .mockReturnValueOnce(freshRead.promise);
     const rendered = mount(<GatewayMonthSpend />);
     await settle();
-    expect(rendered.container.textContent).toContain("Gateway · Oct 2026");
+    expect(rendered.container.textContent).toContain("Gateway · Nov 2026 · MTD");
     expect(rendered.container.textContent).toContain("$42.75 USD");
     await act(async () => vi.advanceTimersByTime(1000));
     expect(invoke).toHaveBeenCalledTimes(2);
     expect(rendered.container.textContent).toContain("Reading audit logs");
     expect(rendered.container.textContent).not.toContain("$42.75");
-    expect(rendered.container.textContent).not.toContain("Oct 2026");
+    expect(rendered.container.textContent).not.toContain("Nov 2026");
     rendered.unmount();
     expect(vi.getTimerCount()).toBe(0);
-    await act(async () => freshRead.resolve(result({ period: NOVEMBER_PERIOD })));
+    await act(async () => freshRead.resolve(result({ period: DECEMBER_PERIOD })));
     await act(async () => vi.advanceTimersByTime(31 * 24 * 3_600_000));
     expect(invoke).toHaveBeenCalledTimes(2);
   });
 
-  it("fences an old month response even before the rollover timer callback runs", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime("2026-11-30T23:59:59.000Z");
+  it("does not retain November's amount when December has no audit snapshot", async () => {
+    vi.setSystemTime(NOVEMBER_PERIOD.endExclusive);
+    invoke
+      .mockResolvedValueOnce(result({ period: NOVEMBER_PERIOD }))
+      .mockResolvedValueOnce(
+        result({ state: "unavailable", period: DECEMBER_PERIOD, snapshot: null, issue: "timeout" }),
+      );
+    const { container } = mount(<GatewayMonthSpend />);
+    await settle();
+    expect(container.textContent).toContain("$42.75 USD");
+    await act(async () => vi.advanceTimersByTime(2000));
+    const trigger = click(container, ".gateway-spend-month__trigger");
+    expect(trigger.textContent).toContain("Gateway · Dec 2026 · MTD");
+    expect(trigger.textContent).toContain("Unavailable");
+    expect(container.textContent).toContain("As ofNo audit snapshot");
+    expect(container.textContent).not.toContain("Nov 2026");
+    expect(container.textContent).not.toContain("$42.75");
+    expect(container.textContent).not.toContain("$0");
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it("fences a November response even before the rollover timer callback runs", async () => {
+    vi.setSystemTime(NOVEMBER_PERIOD.endExclusive);
     const oldRead = deferred<GatewaySpendResult>();
     invoke.mockReturnValueOnce(oldRead.promise);
     const { container } = mount(<GatewayMonthSpend />);
     // Changing the fake wall clock does not fire timers, like a read settling
     // before a delayed deadline callback after system resume.
     vi.setSystemTime("2026-12-01T00:00:00.000Z");
-    await act(async () => oldRead.resolve(result({ period: OCTOBER_PERIOD })));
+    await act(async () => oldRead.resolve(result({ period: NOVEMBER_PERIOD })));
     expect(container.textContent).not.toContain("$42.75");
-    expect(container.textContent).not.toContain("Oct 2026");
+    expect(container.textContent).not.toContain("Nov 2026");
     expect(container.textContent).toContain("Reading audit logs");
     expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { name: "November period", period: NOVEMBER_PERIOD },
+    { name: "missing period", period: null },
+  ])("rejects a new-month amount with a $name instead of relabeling it", async ({ period }) => {
+    vi.setSystemTime(DECEMBER_PERIOD.endExclusive);
+    invoke.mockResolvedValue(result({ period }));
+    const { container } = mount(<GatewayMonthSpend />);
+    await settle();
+    const trigger = click(container, ".gateway-spend-month__trigger");
+    expect(trigger.textContent).toContain("Gateway · Current month · MTD");
+    expect(container.textContent).toContain("Gateway spend could not be read. Try refreshing.");
+    expect(container.textContent).not.toContain("Nov 2026");
+    expect(container.textContent).not.toContain("$42.75");
+    expect(container.textContent).not.toContain("$0");
+    invoke.mockResolvedValue(result({ period: DECEMBER_PERIOD }));
+    click(container, ".gateway-spend__refresh");
+    await settle();
+    expect(trigger.textContent).toContain("Gateway · Dec 2026 · MTD");
+    expect(container.textContent).toContain("$42.75 USD");
   });
 
   it("honors nextRefreshAt, wakes at its boundary, and coalesces repeated manual clicks", async () => {

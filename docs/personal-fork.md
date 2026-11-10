@@ -96,10 +96,12 @@ and your own source query/identity/gateway allowlist; no credentials belong in
 this file. Restart the personal fork to load it. Do not configure the installed
 app's profile or change your normal Pi provider settings.
 
-- The sidebar total is the **previous completed calendar month in UTC**, across
-  all harnesses/personal keys in that gateway source. Open it for exact bounds,
-  source/scope, record counts, refresh and as-of/error/stale information. It is
-  not an all-subscription total or provider-invoice reconciliation.
+- The sidebar total is the **current calendar month to date in UTC**, across
+  all harnesses/personal keys in that gateway source. It rolls over automatically
+  at the first of each UTC month, never reusing or relabeling a prior month's
+  amount. Open it for actual coverage bounds, source/scope, record counts,
+  refresh and as-of/error/stale information. It is not an all-subscription total,
+  a reset-based personal budget balance, or provider-invoice reconciliation.
 - Open the title-bar context ring for **direct session gateway spend**. Supported
   OpenAI Responses requests are tagged prospectively only after their actual
   destination matches the configured gateway; redirects cannot forward tags.

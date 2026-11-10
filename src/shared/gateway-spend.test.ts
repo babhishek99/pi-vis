@@ -3,18 +3,20 @@ import {
   GatewaySessionSpendRequestSchema,
   GatewaySpendRequestSchema,
   GatewaySpendSnapshotSchema,
-  previousUtcMonth,
+  currentUtcMonth,
 } from "./gateway-spend.js";
 
-describe("previousUtcMonth", () => {
+describe("currentUtcMonth", () => {
   it.each([
-    ["2026-11-01T00:00:00.000Z", "2026-10-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z"],
-    ["2026-01-20T13:30:00.000Z", "2025-12-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z"],
-    ["2024-03-31T23:59:59.999Z", "2024-02-01T00:00:00.000Z", "2024-03-01T00:00:00.000Z"],
-    ["2026-03-01T00:30:00+09:00", "2026-01-01T00:00:00.000Z", "2026-02-01T00:00:00.000Z"],
-    ["2026-11-01T00:30:00-04:00", "2026-10-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z"],
-  ])("uses completed UTC calendar boundaries for %s", (input, start, endExclusive) => {
-    expect(previousUtcMonth(new Date(input))).toEqual({ start, endExclusive, timeZone: "UTC" });
+    ["2026-11-10T10:00:00.000Z", "2026-11-01T00:00:00.000Z", "2026-11-10T10:00:00.000Z"],
+    ["2026-11-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z"],
+    ["2026-01-20T13:30:00.000Z", "2026-01-01T00:00:00.000Z", "2026-01-20T13:30:00.000Z"],
+    ["2024-02-29T23:59:59.999Z", "2024-02-01T00:00:00.000Z", "2024-02-29T23:59:59.999Z"],
+    ["2026-03-01T00:30:00+09:00", "2026-02-01T00:00:00.000Z", "2026-02-28T15:30:00.000Z"],
+    ["2026-11-01T00:30:00-04:00", "2026-11-01T00:00:00.000Z", "2026-11-01T04:30:00.000Z"],
+    ["2026-12-31T20:00:00-05:00", "2027-01-01T00:00:00.000Z", "2027-01-01T01:00:00.000Z"],
+  ])("uses the current UTC calendar month through %s", (input, start, endExclusive) => {
+    expect(currentUtcMonth(new Date(input))).toEqual({ start, endExclusive, timeZone: "UTC" });
   });
 });
 

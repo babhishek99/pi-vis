@@ -66,14 +66,14 @@ export function GatewayMonthSpend(): React.ReactElement | null {
         ref={triggerRef}
         type="button"
         className="gateway-spend-month__trigger fade-scope"
-        aria-label="Previous month gateway spend"
+        aria-label="Current month gateway spend"
         aria-expanded={expanded}
         aria-controls={detailsId}
         onClick={() => setOpen((value) => !value)}
       >
         <span className="gateway-spend-month__summary">
           <span id={titleId} className="gateway-spend-month__title">
-            <FadeText>Gateway · {spendMonth(read.result)}</FadeText>
+            <FadeText>Gateway · {spendMonth(read.result)} · MTD</FadeText>
           </span>
           <FadeText className="gateway-spend-month__amount">{summary}</FadeText>
         </span>

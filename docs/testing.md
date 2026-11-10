@@ -114,12 +114,14 @@ its render test exercises create-and-assign without touching real session data.
 
 ## Gateway-spend coverage (personal fork)
 
-`src/shared/gateway-spend.test.ts` checks completed UTC month boundaries
+`src/shared/gateway-spend.test.ts` checks current UTC month-to-date boundaries
 (year/leap/timezone edges) and strict query/path-free billing IPC ingress.
 `src/main/gateway-spend/{config,datadog,service}.test.ts` exercises private
 launch configuration, bounded flex-aggregate parsing, missing versus explicit
 zero prices, personal identity constraints, exact inclusive query end,
 coalescing/rate limits, cache isolation/restart, non-accumulating refreshes,
+legacy completed-month cache rejection, dispatch-time month-to-date coverage,
+queued/in-flight UTC rollover, coverage-based freshness, empty ranges,
 stale/errors, metadata corruption, and session/file/UUID transition fences.
 `src/main/bounded-process.test.ts` additionally checks pre-abort and live process
 group cancellation, including the main-quit-safe signal path.

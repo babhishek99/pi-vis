@@ -53,10 +53,14 @@ Datadog validation, coalescing, rate limits, and a disposable private cache.
 Typed `gatewaySpend.month` and `gatewaySpend.session` invokes return only the
 bounded billing read model from `src/shared/gateway-spend.ts`.
 
-- The month is the **previous completed UTC calendar month**, with an exclusive
-  end. Main converts that end to Datadog's inclusive final millisecond; it never
-  requests a rolling thirty-day interval or silently applies the machine's local
-  timezone. The UI exposes both boundaries and `UTC`.
+- The month is the **current UTC calendar month to date**: the first day at
+  `00:00:00 UTC` through the upper bound captured when the queued query actually
+  dispatches. Main converts that exclusive end to Datadog's inclusive final
+  millisecond; it never requests a rolling thirty-day interval, a previous full
+  month, or the machine's local timezone. The UI exposes both actual coverage
+  boundaries and `UTC`; cached totals retain their original end/as-of, not a
+  relabeled wall-clock end. An exactly empty month-start interval stays pending
+  without a query or invented `$0`.
 - Each refresh uses `pup --read-only --no-agent --output=json logs aggregate`
   against `flex` storage. One query computes `count,sum(@cost)` for priced
   records; another counts records missing `@cost`. Both must complete without
@@ -68,14 +72,17 @@ bounded billing read model from `src/shared/gateway-spend.ts`.
   totals partial.
 - Repeated reads replace snapshots; amounts are never incrementally added from
   Pi events, client nonces, retries, or copied history. The source's per-request
-  audit records have the same aggregation semantics as its budget dashboard.
+  audit records use explicit calendar bounds. A gateway budget page may instead
+  show consumption since an administrative reset; equality with that budget is
+  not assumed or claimed.
 - A sixty-second minimum refresh interval is enforced in main, including manual
   refresh. Month cache TTL is one hour; session TTL is two minutes. The renderer
   refreshes the monthly widget hourly and at the UTC month boundary, fencing the
   previous reporting generation immediately. A session is read only on card
-  opening or explicit refresh—never per streamed token. Session query bounds are
-  captured at queued-job dispatch, not admission; their as-of/freshness follows
-  that coverage upper bound rather than granting query delay a fresh TTL.
+  opening or explicit refresh—never per streamed token. Both month-to-date and
+  session bounds are captured at queued-job dispatch, not admission; as-of and
+  freshness follow that coverage upper bound, not query completion. Superseded
+  queued months do not dispatch or cache a successor range under an old key.
 - Reads for one key share one flight. At most eight distinct keys are admitted
   to a serialized queue; one job owns at most two bounded CLI processes. Both
   captures settle before another job starts, including partial failures. Each
@@ -87,11 +94,13 @@ bounded billing read model from `src/shared/gateway-spend.ts`.
   (`0600`, temporary file plus atomic rename). Only 128 aggregate snapshots are
   retained in memory/on disk. Identity/source configuration hashes partition
   caches, so changing account or query cannot reuse another scope's amount.
+  The `month-to-date:` key namespace ignores the former completed-month keys;
+  same-key entries with a different start or unelapsed end are also rejected.
   Cache read/write failures cannot become a fabricated zero.
 - CLI stderr, raw logs, tokens, queries, internal URLs and session paths never
   cross billing IPC. Failures use fixed reason codes. Last good values remain
   visibly **stale** with their as-of time and the error; no prior month is reused
-  for a newly completed month.
+  for the new current month.
 
 ## Prospective direct-session attribution
 
@@ -154,7 +163,7 @@ lost marker starts a new partial tracking window, not a historical backfill.
 
 ## Presentation and verification
 
-The sidebar shows the completed-month aggregate above its footer. Its details
+The sidebar shows the current month-to-date aggregate above its footer. Its details
 expose source/scope, exact UTC range, record counts, as-of/stale/error information
 and bounded refresh. The ContextMeter details include a separately labeled direct
 session section; they do not change the context gauge or Pi statistics. Its open

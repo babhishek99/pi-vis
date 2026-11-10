@@ -67,7 +67,7 @@ Opens the Electron app with HMR. The renderer is also accessible at http://local
 
 See [Personal fork development](docs/personal-fork.md) for an isolated UI preview,
 a separate Electron profile, session-group controls, and opt-in gateway-recorded
-spend. A private Datadog adapter reports the previous completed UTC month across
+spend. A private Datadog adapter reports the current UTC month to date across
 personal gateway traffic; supported requests can be attributed prospectively to
 a direct session with explicit partial coverage. Missing history is never priced
 by guesswork. These changes do not replace your installed app.

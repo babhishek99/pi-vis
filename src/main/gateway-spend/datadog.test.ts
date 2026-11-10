@@ -77,6 +77,16 @@ describe("Datadog personal gateway audit reader", () => {
     expect(captureProcessOutput).toHaveBeenCalledTimes(2);
   });
 
+  it.each(["2024-02-01T00:00:00.000Z", "2024-01-31T23:59:59.999Z", "invalid"])(
+    "does not spawn a CLI for an empty, inverted or invalid interval ending %s",
+    async (endExclusive) => {
+      await expect(
+        queryGatewaySpend({ ...request, period: { ...request.period, endExclusive } }),
+      ).rejects.toEqual(new InvalidGatewayAggregateError());
+      expect(captureProcessOutput).not.toHaveBeenCalled();
+    },
+  );
+
   it("keeps no records distinct from an explicit zero-cost request", async () => {
     vi.mocked(captureProcessOutput).mockResolvedValue({ stdout: empty, stderr: "" });
     expect(await queryGatewaySpend(request)).toMatchObject({

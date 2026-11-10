@@ -58,8 +58,13 @@ export async function queryGatewaySpend(
     throw new Error("Invalid session tag");
   }
   const query = `(${config.auditQuery}) @key_type:personal @user_email:"${config.userEmail}"${sessionTag ? ` @custom_tags.pivis_session:${sessionTag}` : ""}`;
+  const start = Date.parse(period.start);
+  const end = Date.parse(period.endExclusive);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    throw new InvalidGatewayAggregateError();
+  }
   // Datadog's `to` is inclusive; the public period uses an exclusive end.
-  const to = new Date(Date.parse(period.endExclusive) - 1).toISOString();
+  const to = new Date(end - 1).toISOString();
   const aggregate = async (priced: boolean) => {
     const { stdout } = await captureProcessOutput(
       config.pupExecutable,
