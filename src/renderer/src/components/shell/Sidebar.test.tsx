@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { currentUtcMonth } from "@shared/gateway-spend.js";
 import type { SessionId } from "@shared/ids.js";
 import { defaultSettings } from "@shared/settings.js";
 import type React from "react";
@@ -71,20 +72,17 @@ describe("Sidebar boot workspace restore", () => {
     const invoke = vi.fn(async (channel: string) => {
       if (channel === "workspace.list") return [];
       if (channel === "gatewaySpend.month") {
+        const period = currentUtcMonth(new Date());
         return {
           state: "ready",
           scope: "personal_gateway",
           source: "Datadog gateway audit logs",
-          period: {
-            start: "2026-09-01T00:00:00.000Z",
-            endExclusive: "2026-10-01T00:00:00.000Z",
-            timeZone: "UTC",
-          },
+          period,
           snapshot: {
             amountUsd: 42.75,
             pricedRequests: 12,
             unpricedRequests: 0,
-            asOf: "2026-10-15T12:00:00.000Z",
+            asOf: period.endExclusive,
           },
           trackedSince: null,
           stale: false,
@@ -100,6 +98,10 @@ describe("Sidebar boot workspace restore", () => {
     const widget = container.querySelector(".gateway-spend-month");
     expect(widget).not.toBeNull();
     expect(widget?.textContent).toContain("$42.75 USD");
+    expect(widget?.textContent).toContain("MTD");
+    expect(widget?.querySelector("button")?.getAttribute("aria-label")).toBe(
+      "Current month gateway spend",
+    );
     expect(container.querySelector(".sidebar__footer")?.previousElementSibling).toBe(widget);
     expect(invoke).toHaveBeenCalledWith("gatewaySpend.month", {});
     expect(invoke.mock.calls.some(([channel]) => channel === "gatewaySpend.session")).toBe(false);
