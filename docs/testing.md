@@ -91,7 +91,12 @@ create-empty-group → drag-from-Ungrouped journey, group-to-group and collapsed
 header drops, Ungrouped return, live demo identities/labels, cross-section pin
 retention versus same-section pin ordering, cross-workspace/foreign/cancelled
 payload rejection, Escape non-interruption, workspace-grip independence, and
-optimistic slow/failing drop rollback with retry. The matching Electron
+optimistic slow/failing drop rollback with retry. Race regressions fail before
+the fixes and cover a failed first drop followed by a successful queued drop,
+source detachment during rollback without a React `dragend`, stale predecessor
+end events, and latest-gesture-only focus restoration. Settings-store units
+exercise pure group mutations across both successful and failed predecessor
+writes with an interleaved non-group preference patch. The matching Electron
 `tests/e2e/sidebar-organization.spec.mts` drives real discovery and settings IPC,
 drags real-discovery rows into a pre-created collapsed group and back to
 Ungrouped, checks membership/pins/visibility across a full app relaunch, and

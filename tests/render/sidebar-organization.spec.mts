@@ -49,10 +49,14 @@ async function holdFailingGroupSave(page: import("@playwright/test").Page): Prom
     Reflect.set(window.pivis, "invoke", (...args: unknown[]) => {
       const updates = args[1] as { sessionGroups?: unknown } | undefined;
       if (args[0] === "settings.set" && updates?.sessionGroups !== undefined) {
-        return new Promise((_resolve, reject) => {
+        return new Promise((resolve, reject) => {
           Reflect.set(window, "__failGroupSave", () => {
             Reflect.set(window.pivis, "invoke", originalInvoke);
             reject(new Error("fixture settings write failure"));
+          });
+          Reflect.set(window, "__succeedGroupSave", () => {
+            Reflect.set(window.pivis, "invoke", originalInvoke);
+            void originalInvoke.apply(window.pivis, args).then(resolve, reject);
           });
         });
       }
@@ -319,6 +323,105 @@ test.describe("sidebar organization", () => {
       (await page.evaluate(() => window.pivis.invoke("settings.get", undefined))).sessionGroups[0]
         ?.sessionFiles,
     ).toEqual([WORK_FILE]);
+  });
+
+  test("rebases a queued drop after the previous save fails instead of persisting the failed move", async ({
+    page,
+  }) => {
+    await page.getByRole("button", { name: "Create session group in pi-vis" }).click();
+    const dialog = page.getByRole("dialog", { name: "New session group", exact: true });
+    await dialog.getByLabel("Group name").fill("Concurrent moves");
+    await dialog.getByRole("button", { name: "Create group", exact: true }).click();
+    const group = page.getByRole("group", { name: "Concurrent moves", exact: true });
+    const review = page.locator('.sidebar__session[data-session-file="/preview/review.jsonl"]');
+    const fork = page.locator('.sidebar__session[data-session-file="/preview/fork.jsonl"]');
+    await holdFailingGroupSave(page);
+    await review.dragTo(group.locator(".sidebar__group-header"));
+    await fork.dragTo(group.locator(".sidebar__group-header"));
+    await expect(group.locator(".sidebar__session")).toHaveCount(2);
+    await rejectGroupSave(page);
+    await expect(group.locator(".sidebar__session")).toHaveCount(1);
+    await expect(group.locator(".sidebar__session-name")).toHaveText("Ordinary fork");
+    await expect(
+      page
+        .getByRole("group", { name: "Ungrouped", exact: true })
+        .locator('[data-session-file="/preview/review.jsonl"]'),
+    ).toBeVisible();
+    const settings = await page.evaluate(() => window.pivis.invoke("settings.get", undefined));
+    expect(settings.sessionGroups[0]?.sessionFiles).toEqual(["/preview/fork.jsonl"]);
+  });
+
+  test("removing a drag source during save rollback releases its Escape claim and authorization", async ({
+    page,
+  }) => {
+    for (const name of ["Pending move", "Other group"]) {
+      await page.getByRole("button", { name: "Create session group in pi-vis" }).click();
+      const dialog = page.getByRole("dialog", { name: "New session group", exact: true });
+      await dialog.getByLabel("Group name").fill(name);
+      await dialog.getByRole("button", { name: "Create group", exact: true }).click();
+    }
+    const group = page.getByRole("group", { name: "Pending move", exact: true });
+    const other = page.getByRole("group", { name: "Other group", exact: true });
+    const row = page.locator('.sidebar__session[data-session-file="/preview/review.jsonl"]');
+    await holdFailingGroupSave(page);
+    await row.dragTo(group.locator(".sidebar__group-header"));
+    const detachedSource = await row.elementHandle();
+    if (!detachedSource) throw new Error("Missing drag source");
+    const dataTransfer = await page.evaluateHandle(() => new DataTransfer());
+    await detachedSource.dispatchEvent("dragstart", { dataTransfer });
+    expect(
+      await page.evaluate(() =>
+        (window as unknown as PreviewWindow).__pivisPreview.escapeClaimCount(),
+      ),
+    ).toBe(1);
+    await rejectGroupSave(page);
+    await expect(group.locator(".sidebar__session")).toHaveCount(0);
+    expect(await detachedSource.evaluate((element) => element.isConnected)).toBe(false);
+    await expect
+      .poll(() =>
+        page.evaluate(() => (window as unknown as PreviewWindow).__pivisPreview.escapeClaimCount()),
+      )
+      .toBe(0);
+    await other.dispatchEvent("drop", { dataTransfer });
+    await expect(other.locator(".sidebar__session")).toHaveCount(0);
+    // A late native dragend from the detached predecessor cannot cancel a new source.
+    await row.dispatchEvent("dragstart", { dataTransfer });
+    await detachedSource.dispatchEvent("dragend", { dataTransfer });
+    expect(
+      await page.evaluate(() =>
+        (window as unknown as PreviewWindow).__pivisPreview.escapeClaimCount(),
+      ),
+    ).toBe(1);
+    await row.dispatchEvent("dragend", { dataTransfer });
+    expect(
+      await page.evaluate(() =>
+        (window as unknown as PreviewWindow).__pivisPreview.escapeClaimCount(),
+      ),
+    ).toBe(0);
+    expect(
+      (
+        await page.evaluate(() => window.pivis.invoke("settings.get", undefined))
+      ).sessionGroups.every((item) => item.sessionFiles.length === 0),
+    ).toBe(true);
+    await dataTransfer.dispose();
+    await detachedSource.dispose();
+  });
+
+  test("only the latest drop may restore focus after overlapping saves", async ({ page }) => {
+    await page.getByRole("button", { name: "Create session group in pi-vis" }).click();
+    const dialog = page.getByRole("dialog", { name: "New session group", exact: true });
+    await dialog.getByLabel("Group name").fill("Focus destination");
+    await dialog.getByRole("button", { name: "Create group", exact: true }).click();
+    const group = page.getByRole("group", { name: "Focus destination", exact: true });
+    const review = page.locator('.sidebar__session[data-session-file="/preview/review.jsonl"]');
+    const fork = page.locator('.sidebar__session[data-session-file="/preview/fork.jsonl"]');
+    await holdFailingGroupSave(page);
+    await review.dragTo(group.locator(".sidebar__group-header"));
+    await fork.dragTo(group.locator(".sidebar__group-header"));
+    await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
+    await page.evaluate(() => (Reflect.get(window, "__succeedGroupSave") as () => void)());
+    await expect(fork).toBeFocused();
+    await expect(group.locator(".sidebar__session")).toHaveCount(2);
   });
 
   test("defaults to hiding children and applies the Settings toggle immediately without session side effects", async ({

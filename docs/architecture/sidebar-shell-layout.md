@@ -91,8 +91,13 @@ immediately reveals the moved row's page; **Ungrouped** remains a visible drop
 destination even when empty. Drops reuse the existing optimistic settings write,
 roll back with an error on failure, and never activate or restart a session.
 Cross-workspace/foreign drops are ignored; only an in-memory source plus the
-private drag marker authorizes a membership change. Drag end/cancel clears that
-source and target highlight. A drag claims Escape so cancelling cannot interrupt
+private drag marker authorizes a membership change. Source authorization is also
+bound to the actual connected row and its current file key; a temporary DOM
+observer/native end listener retires a detached or replaced source even when
+React's delegated `dragend` cannot reach it. Drag end/cancel clears the source and
+target highlight. Focus restoration is gesture-generation fenced so an older
+save cannot take focus from a newer drag/drop or group action. A drag claims
+Escape so cancelling cannot interrupt
 the active agent. Workspace-grip reordering and same-section pin reordering keep
 separate admission paths.
 
@@ -123,6 +128,14 @@ while its inactive peers are hidden, and activation reveals its section page
 without reordering rows or overriding a deliberate collapse. Pins do not
 bypass this filter. Filtering precedes section pagination/counts and changes no
 runtime, archives, group membership, JSONL, or saved-session search behavior.
+
+Every group change uses `settings-store.updateSessionGroups` with a pure immutable
+mutation. It is projected optimistically, then re-evaluated against the latest
+confirmed groups when its serialized settings write runs. A later drop, collapse,
+rename, or removal therefore cannot re-persist an earlier failed move by capturing
+its optimistic array. Generated IDs are allocated once outside the mutation;
+only the resulting partial settings object crosses IPC. Other preference writes
+retain their existing behavior, and interleaved non-group patches remain intact.
 
 Group dialogs claim Escape, trap focus, and restore the invoking control (or the
 moved row when it remounts). During a slow save the focusable dialog itself keeps

@@ -1,6 +1,6 @@
 import type { SessionId } from "@shared/ids.js";
 import type { SessionStatus } from "@shared/ipc-contract.js";
-import type { AppSettings, SessionGroup } from "@shared/settings.js";
+import type { SessionGroup } from "@shared/settings.js";
 import { isSubagentSession } from "@shared/subagent-sessions.js";
 import type React from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -38,6 +38,7 @@ interface DraggedSession {
   workspacePath: string;
   filePath: string;
   groupId: string | null;
+  element: HTMLElement;
 }
 
 type SidebarSessionEntry = {
@@ -167,6 +168,7 @@ export function Sidebar({
   const reorderWorkspaces = useSessionsStore((s) => s.reorderWorkspaces);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const updateSettings = useSettingsStore((s) => s.update);
+  const updateSessionGroups = useSettingsStore((s) => s.updateSessionGroups);
   const pinnedSessions = useSettingsStore((s) => s.settings.pinnedSessions);
   const sessionGroups = useSettingsStore((s) => s.settings.sessionGroups);
   const showSubagentSessions = useSettingsStore((s) => s.settings.showSubagentSessions);
@@ -179,9 +181,10 @@ export function Sidebar({
   const sidebarRef = useRef<HTMLElement>(null);
   const dragIndexRef = useRef<number | null>(null);
   const sessionDragRef = useRef<DraggedSession | null>(null);
-  const [isDraggingSession, setIsDraggingSession] = useState(false);
+  const groupFocusRevisionRef = useRef(0);
+  const [dragSource, setDragSource] = useState<HTMLElement | null>(null);
   const [dropTargetKey, setDropTargetKey] = useState<string | null>(null);
-  useEscapeClaim(isDraggingSession);
+  useEscapeClaim(dragSource !== null);
   const [pendingArchive, setPendingArchive] = useState<PendingArchive | null>(null);
   const [archiveInProgress, setArchiveInProgress] = useState(false);
   const [pendingGroupEdit, setPendingGroupEdit] = useState<PendingGroupEdit | null>(null);
@@ -192,25 +195,66 @@ export function Sidebar({
     returnFocus: HTMLButtonElement;
   } | null>(null);
 
-  const persistSidebar = useCallback(
-    async (updates: Partial<AppSettings>): Promise<boolean> => {
+  const persistSessionGroups = useCallback(
+    async (mutate: (groups: SessionGroup[]) => SessionGroup[]): Promise<boolean> => {
+      groupFocusRevisionRef.current++;
       setSidebarError(null);
       try {
-        await updateSettings(updates);
+        await updateSessionGroups(mutate);
         return true;
       } catch {
         setSidebarError("Couldn’t save sidebar changes. Please try again.");
         return false;
       }
     },
-    [updateSettings],
+    [updateSessionGroups],
   );
 
   const clearSessionDrag = useCallback((): void => {
     sessionDragRef.current = null;
-    setIsDraggingSession(false);
+    setDragSource(null);
     setDropTargetKey(null);
   }, []);
+
+  useLayoutEffect(() => {
+    const root = sidebarRef.current;
+    if (!dragSource || !root) return;
+    const finish = (): void => {
+      if (sessionDragRef.current?.element === dragSource) clearSessionDrag();
+    };
+    const validate = (): void => {
+      const source = sessionDragRef.current;
+      if (
+        source?.element === dragSource &&
+        (!dragSource.isConnected || dragSource.dataset.sessionFile !== source.filePath)
+      )
+        finish();
+    };
+    // A save rollback, filtering, or runtime transition can detach the source.
+    // React's delegated dragend cannot reach a detached node; retire it ourselves.
+    const observer = new MutationObserver(validate);
+    observer.observe(root, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["data-session-file"],
+    });
+    dragSource.addEventListener("dragend", finish);
+    validate();
+    return () => {
+      observer.disconnect();
+      dragSource.removeEventListener("dragend", finish);
+    };
+  }, [dragSource, clearSessionDrag]);
+
+  const validatedDragSource = (event: React.DragEvent): DraggedSession | null => {
+    const source = sessionDragRef.current;
+    return source?.element.isConnected &&
+      source.element.dataset.sessionFile === source.filePath &&
+      event.dataTransfer.types.includes(SESSION_DRAG_TYPE)
+      ? source
+      : null;
+  };
 
   const revealGroupedSession = (
     workspacePath: string,
@@ -241,27 +285,36 @@ export function Sidebar({
     workspacePath: string,
     groupId: string | null,
   ): boolean => {
-    const source = sessionDragRef.current;
-    return (
-      source !== null &&
-      event.dataTransfer.types.includes(SESSION_DRAG_TYPE) &&
-      source.workspacePath === workspacePath &&
-      source.groupId !== groupId
-    );
+    const source = validatedDragSource(event);
+    return source !== null && source.workspacePath === workspacePath && source.groupId !== groupId;
   };
 
   const dropSession = async (workspacePath: string, groupId: string | null): Promise<void> => {
     const source = sessionDragRef.current;
     clearSessionDrag();
     if (!source || source.workspacePath !== workspacePath) return;
-    const current = useSettingsStore.getState().settings.sessionGroups;
-    const next = moveSessionToGroup(current, workspacePath, source.filePath, groupId);
-    if (next === current) return;
-    revealGroupedSession(workspacePath, source.filePath, groupId, next);
-    await persistSidebar({ sessionGroups: next });
+    const write = persistSessionGroups((groups) => {
+      const next = moveSessionToGroup(groups, workspacePath, source.filePath, groupId);
+      if (groupId !== null && next === groups) throw new Error("Missing group");
+      return next;
+    });
+    const focusRevision = groupFocusRevisionRef.current;
+    revealGroupedSession(
+      workspacePath,
+      source.filePath,
+      groupId,
+      useSettingsStore.getState().settings.sessionGroups,
+    );
+    await write;
     const restore = (): void => {
-      // Moving/rollback can remount the row. Never steal focus from a newer action.
-      if (document.activeElement !== document.body) return;
+      // Moving/rollback can remount the row. Only the latest gesture may restore
+      // focus, and never while a successor drag or a typing control owns it.
+      if (
+        focusRevision !== groupFocusRevisionRef.current ||
+        sessionDragRef.current ||
+        document.activeElement !== document.body
+      )
+        return;
       Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>(".sidebar__session") ?? [])
         .find((row) => row.dataset.sessionFile === source.filePath)
         ?.focus();
@@ -279,11 +332,10 @@ export function Sidebar({
     const filePath = entry.filePath;
     if (!filePath) return { draggable: false };
     const canReorderPinned = (event: React.DragEvent): boolean => {
-      const source = sessionDragRef.current;
+      const source = validatedDragSource(event);
       return (
         isPinned &&
         source !== null &&
-        event.dataTransfer.types.includes(SESSION_DRAG_TYPE) &&
         source.workspacePath === workspacePath &&
         source.groupId === groupId &&
         pinnedSet.has(source.filePath)
@@ -294,13 +346,16 @@ export function Sidebar({
       onDragStart: (event) => {
         event.stopPropagation();
         dragIndexRef.current = null;
-        sessionDragRef.current = { workspacePath, filePath, groupId };
-        setIsDraggingSession(true);
+        groupFocusRevisionRef.current++;
+        sessionDragRef.current = { workspacePath, filePath, groupId, element: event.currentTarget };
+        setDragSource(event.currentTarget);
         event.dataTransfer.effectAllowed = "move";
         // Only an in-memory source authorizes a move; external payloads are ignored.
         event.dataTransfer.setData(SESSION_DRAG_TYPE, "sidebar-session");
       },
-      onDragEnd: clearSessionDrag,
+      onDragEnd: (event) => {
+        if (sessionDragRef.current?.element === event.currentTarget) clearSessionDrag();
+      },
       onDragOver: (event) => {
         if (!canReorderPinned(event)) return;
         event.preventDefault();
@@ -320,34 +375,52 @@ export function Sidebar({
   const saveGroupEdit = async (value: string): Promise<void> => {
     if (!pendingGroupEdit) return;
     const target = pendingGroupEdit;
-    const current = useSettingsStore.getState().settings.sessionGroups;
-    let next = current;
-    let destinationGroupId: string | null = value || null;
-    if (target.mode === "create") {
-      const group = {
-        id: crypto.randomUUID(),
-        workspacePath: target.workspacePath,
-        name: value,
-        sessionFiles: [],
-        collapsed: false,
-      };
-      next = [...current, group];
-      destinationGroupId = group.id;
-      if (target.filePath) {
-        next = moveSessionToGroup(next, target.workspacePath, target.filePath, group.id);
+    // Allocate once: the pure mutation runs for both the optimistic projection
+    // and its eventual confirmed-state write.
+    const createdGroup: SessionGroup | undefined =
+      target.mode === "create"
+        ? {
+            id: crypto.randomUUID(),
+            workspacePath: target.workspacePath,
+            name: value,
+            sessionFiles: [],
+            collapsed: false,
+          }
+        : undefined;
+    const destinationGroupId = createdGroup?.id ?? (value || null);
+    groupFocusRevisionRef.current++;
+    await updateSessionGroups((groups) => {
+      if (createdGroup) {
+        const next = [...groups, createdGroup];
+        return target.filePath
+          ? moveSessionToGroup(next, target.workspacePath, target.filePath, createdGroup.id)
+          : next;
       }
-    } else if (target.mode === "rename") {
-      if (!current.some((group) => group.id === target.groupId)) throw new Error("Missing group");
-      next = current.map((group) =>
-        group.id === target.groupId ? { ...group, name: value } : group,
-      );
-    } else if (target.filePath) {
-      next = moveSessionToGroup(current, target.workspacePath, target.filePath, value || null);
-      if (value && next === current) throw new Error("Missing group");
-    }
-    await updateSettings({ sessionGroups: next });
+      if (target.mode === "rename") {
+        if (!groups.some((group) => group.id === target.groupId)) throw new Error("Missing group");
+        return groups.map((group) =>
+          group.id === target.groupId ? { ...group, name: value } : group,
+        );
+      }
+      if (target.filePath) {
+        const next = moveSessionToGroup(
+          groups,
+          target.workspacePath,
+          target.filePath,
+          value || null,
+        );
+        if (value && next === groups) throw new Error("Missing group");
+        return next;
+      }
+      return groups;
+    });
     if (target.filePath && target.mode !== "rename") {
-      revealGroupedSession(target.workspacePath, target.filePath, destinationGroupId, next);
+      revealGroupedSession(
+        target.workspacePath,
+        target.filePath,
+        destinationGroupId,
+        useSettingsStore.getState().settings.sessionGroups,
+      );
     }
   };
 
@@ -926,15 +999,15 @@ export function Sidebar({
                                     aria-expanded={!group.collapsed}
                                     aria-controls={`session-group-${group.id}`}
                                     onClick={() => {
-                                      const current =
-                                        useSettingsStore.getState().settings.sessionGroups;
-                                      void persistSidebar({
-                                        sessionGroups: current.map((item) =>
-                                          item.id === group.id
-                                            ? { ...item, collapsed: !item.collapsed }
-                                            : item,
+                                      const collapsed = !useSettingsStore
+                                        .getState()
+                                        .settings.sessionGroups.find((item) => item.id === group.id)
+                                        ?.collapsed;
+                                      void persistSessionGroups((groups) =>
+                                        groups.map((item) =>
+                                          item.id === group.id ? { ...item, collapsed } : item,
                                         ),
-                                      });
+                                      );
                                     }}
                                   >
                                     <IconChevronRight
@@ -974,14 +1047,18 @@ export function Sidebar({
                                     onClick={(event) => {
                                       const workspace =
                                         event.currentTarget.closest(".sidebar__workspace");
-                                      const current =
-                                        useSettingsStore.getState().settings.sessionGroups;
-                                      void persistSidebar({
-                                        sessionGroups: current.filter(
-                                          (item) => item.id !== group.id,
-                                        ),
-                                      }).then((saved) => {
+                                      const write = persistSessionGroups((groups) =>
+                                        groups.filter((item) => item.id !== group.id),
+                                      );
+                                      const focusRevision = groupFocusRevisionRef.current;
+                                      void write.then((saved) => {
                                         const restore = (): void => {
+                                          if (
+                                            focusRevision !== groupFocusRevisionRef.current ||
+                                            sessionDragRef.current ||
+                                            document.activeElement !== document.body
+                                          )
+                                            return;
                                           // Optimistic removal unmounts the old
                                           // header; rollback creates a new node.
                                           const restoredGroup = Array.from(
