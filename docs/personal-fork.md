@@ -1,8 +1,9 @@
 # Personal fork development
 
-This checkout adds workspace-local sidebar session groups and a default-off
-**Show sub-agent sessions** preference. The implementation is source-level; it
-has not replaced the installed `/Applications/Pi-Vis.app`.
+This checkout adds workspace-local sidebar session groups, a default-off
+**Show sub-agent sessions** preference, and optional gateway-recorded spending.
+It can run in development or as a separately packaged **Pi-Vis Personal.app**;
+neither path replaces the installed `/Applications/Pi-Vis.app`.
 
 ## Run safely alongside the installed app
 
@@ -123,10 +124,62 @@ history. This fork is public: do not commit private gateway URLs, credentials,
 request logs, or user-specific billing data. Deployment-specific values remain
 in local configuration.
 
-## Packaging later
+## Standalone personal desktop app
 
-Development mode is the safe starting point. Before installing a separately
-branded build, choose its app name, bundle ID, profile location, and release/update
-feed in `electron-builder.yml` and the app-update configuration. Do not publish
-or install a personal package that can silently update itself from the upstream
-Pi-Vis feed. Packaging/signing instructions remain in `RELEASING.md`.
+The opt-in `electron-builder.personal.yml` extends the normal packaging rules
+without changing the upstream build. It uses **Pi-Vis Personal**, bundle ID
+`dev.pivis.personal`, and separate output under `release/personal/<version>/`.
+Its packaged metadata selects `pi-vis-personal` under Electron's app-data
+location (on macOS, `~/Library/Application Support/pi-vis-personal`) before
+logging or acquiring instance locks. Finder/Dock launches need no environment
+variables. An explicit `PIVIS_SETTINGS_DIR` still overrides the profile for tests
+or development. The build directory's bundle and internal executable remain
+`Pi-Vis` for compatibility with the existing final-artifact tools; the install
+below names the separate bundle `Pi-Vis Personal.app`, with personal display and
+runtime names.
+
+Personal builds permanently disable app-update checks **and installation**,
+including when a feed override is inherited. There is no personal release feed;
+`publish: null` and `--publish never` prevent publication. Normal extension
+package checks and Pi's provider configuration remain unchanged.
+
+Build a locally ad-hoc-signed Apple Silicon app and run its final packaged
+runtime, security-closure and main/SDK-host PTY checks before installing:
+
+```sh
+cd ~/github/pi-vis
+npm run dist:personal
+version="$(node -p "require('./package.json').version")"
+bundle="$PWD/release/personal/$version/mac-arm64/Pi-Vis.app"
+codesign --verify --deep --strict --verbose=2 "$bundle"
+node scripts/verify-packaged-pty.mjs "$bundle"
+```
+
+The existing Mach-O-only signer seals the app with ad-hoc identity `-`; no
+Developer ID certificate or Apple credentials are used. This avoids leaving
+Electron's renamed bundle with an invalid linker signature. It is **not** a
+Developer ID-signed/notarized release, and Gatekeeper approval for distribution
+is not claimed. This directory build creates no DMG/ZIP, tags, GitHub release or
+notarization. The full verification suite and signing/notarization/manual gates
+in `RELEASING.md` are still required before claiming release readiness or
+distributing it. Verify the copied app's strict signature too.
+
+For a first install (do not overwrite a running personal app):
+
+```sh
+mkdir -p "$HOME/Applications"
+test ! -e "$HOME/Applications/Pi-Vis Personal.app" &&
+  ditto "$bundle" "$HOME/Applications/Pi-Vis Personal.app"
+env -u ELECTRON_RUN_AS_NODE open "$HOME/Applications/Pi-Vis Personal.app"
+```
+
+Clearing `ELECTRON_RUN_AS_NODE` matters when invoking `open` from an
+Electron-hosted coding-agent shell: otherwise LaunchServices inherits Node-only
+mode and the app can exit before bootstrap. Normal Finder/Dock launches need no
+such wrapper. Never carry test-only visibility/profile overrides into a real
+launch.
+
+The app runs independently of the terminal and source checkout. You can keep it
+in the Dock. Rebuild and replace it manually for future fork changes, only after
+quitting the personal app; upstream auto-updates cannot overwrite this fork.
+The profile/history-sharing cautions above apply equally to standalone builds.

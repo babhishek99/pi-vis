@@ -67,6 +67,16 @@ store-credentials "pivis-notary" ...` once. Optional overrides:
 `APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID` as a fallback, and
 `CSC_LINK` / `CSC_KEY_PASSWORD` / `CSC_NAME` for signing identity overrides.
 
+## Local personal fork
+
+`npm run dist:personal` is an opt-in locally ad-hoc-signed directory build, not
+a Developer ID-signed/notarized public release. It uses
+`electron-builder.personal.yml` for a separate app identity,
+default profile and output tree, disables all app updates in main, and never
+publishes. Run the final packaged runtime verifier before installing it. See
+[`docs/personal-fork.md`](personal-fork.md#standalone-personal-desktop-app) for
+commands and isolation limits. This path does not waive any release gate above.
+
 ## Landing page
 
 GitHub Pages serves the static download site from `site/` via

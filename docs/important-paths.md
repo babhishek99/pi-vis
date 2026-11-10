@@ -9,6 +9,8 @@
 | `src/main/diagnostics.ts` | Synchronous rotating diagnostic sink plus main-process console and fatal-error capture. |
 | `src/main/diagnostics.test.ts` | Diagnostic formatting, rotation, file-permission, and failure-isolation coverage. |
 | `src/main/index.ts` | Electron bootstrap and renderer/Electron-child/Crashpad diagnostic wiring. |
+| `src/main/app-identity.ts` | Personal packaged identity and default profile selection before diagnostics/instance locks. |
+| `electron-builder.personal.yml` | Opt-in local Pi-Vis Personal packaging; distinct bundle ID, no publish/feed, local ad-hoc signing only. |
 | `src/main/pi/session-host.ts` | Child-IPC wrapper, host envelope identity/sequence validation, and resync fencing. |
 | `src/preload/index.ts` | Typed renderer bridge and uncaught renderer-error reporting. |
 | `src/main/sessions/session-registry.ts` | Snapshot lease/availability, lifecycle, activation-visit retirement, acknowledgements, and two-phase close; it has no fixed process-cap refusal. |
@@ -29,6 +31,7 @@
 | `tests/fixtures/fake-pi.mjs` | Version/update test executable; not a session runtime. |
 | `~/.pi/agent/sessions/` | Persisted session JSONL history. |
 | `~/Library/Application Support/pi-vis/settings.json` | Pi-Vis settings. |
+| `~/Library/Application Support/pi-vis-personal/` | Standalone personal build's default app profile (or explicit development override). |
 | `<userData>/diagnostics.log` | Rotating main, renderer, Electron-child, and SDK-host error diagnostics; the previous file is `diagnostics.log.1`. |
 | `<crashDumps>/` | Local Electron Crashpad minidumps for native process crashes; uploads are disabled. |
 | `<userData>/session-search/v1/` | Disposable private SQLite search index; JSONL remains authoritative. |

@@ -1,5 +1,6 @@
 import type { AppUpdateStatus } from "@shared/app-updates.js";
 import { app, autoUpdater } from "electron";
+import { isPersonalAppName } from "./app-identity.js";
 
 const UPDATE_OWNER = "rsingapuri";
 const UPDATE_REPO = "pi-vis";
@@ -110,6 +111,11 @@ export function checkForAppUpdate(): AppUpdateStatus {
 }
 
 export function installAppUpdate(): AppUpdateStatus {
+  if (!isAppUpdaterUsable()) {
+    status = makeStatus("disabled");
+    emitStatus();
+    return status;
+  }
   if (status.state !== "downloaded") return status;
 
   try {
@@ -149,6 +155,7 @@ function isAppUpdaterUsable(): boolean {
   return (
     process.platform === "darwin" &&
     app.isPackaged &&
+    !isPersonalAppName(app.getName()) &&
     process.env["PIVIS_DISABLE_APP_UPDATES"] !== "1"
   );
 }

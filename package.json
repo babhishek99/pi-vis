@@ -17,6 +17,7 @@
     "build": "node scripts/ensure-worktree-dev.mjs && npm run typecheck && electron-vite build && npm run copy-host",
     "copy-host": "node scripts/copy-host.mjs",
     "dist": "npm run build && electron-builder --mac && npm run verify:mac-artifacts && npm run verify:packaged-pty",
+    "dist:personal": "npm run build && electron-builder --config electron-builder.personal.yml --mac --arm64 --dir --publish never",
     "dist:signed": "node scripts/dist-signed.mjs",
     "release": "node scripts/release.mjs",
     "patch:node-pty": "node scripts/patch-node-pty.mjs",

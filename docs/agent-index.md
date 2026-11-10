@@ -17,7 +17,7 @@ Load only the documentation relevant to the change.
   `docs/important-paths.md`, and `docs/testing.md`.
 - Tests, fault injection, fixtures, or verification: `docs/testing.md`.
 - Paths and persisted locations: `docs/important-paths.md`.
-- Personal fork iteration or isolated development profiles: `docs/personal-fork.md`; sidebar behavior also requires `docs/architecture/sidebar-shell-layout.md`.
+- Personal fork iteration, standalone personal packaging/identity, or isolated profiles: `docs/personal-fork.md`; packaging also requires the release docs below, and sidebar behavior requires `docs/architecture/sidebar-shell-layout.md`.
 - Gateway audit costs, private Datadog configuration/cache, monthly or per-session spend UI, or prospective request attribution: `docs/architecture/gateway-spend.md`, `docs/personal-fork.md`, `docs/architecture/runtime-services.md`, and `docs/testing.md`. Transport/host changes also require the IPC/state and pinned-runtime docs above.
 - Workspace saved-session search, its worker/index, result context, or search UI: `docs/architecture/session-search.md`, `docs/decisions/0002-workspace-session-search.md`, `docs/architecture/sidebar-shell-layout.md`, and `docs/ui-conventions.md`; also read `docs/testing.md` for corpus and gates.
 - Release automation, final-app packaging gates, signing, notarization, or
