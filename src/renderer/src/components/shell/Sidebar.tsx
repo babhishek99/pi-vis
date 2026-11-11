@@ -29,6 +29,7 @@ import { GatewayMonthSpend } from "../gateway-spend/GatewayMonthSpend.js";
 import { openSessionSearch } from "../session-search/SessionSearchModal.js";
 import { ConfirmDialog } from "./ConfirmDialog.js";
 import { SessionGroupDialog } from "./SessionGroupDialog.js";
+import { SidebarSessionName, type SidebarSessionRename } from "./SidebarSessionName.js";
 import { moveSessionToGroup, partitionSessionGroups } from "./session-groups.js";
 import "./Sidebar.css";
 
@@ -189,6 +190,11 @@ export function Sidebar({
   const [pendingArchive, setPendingArchive] = useState<PendingArchive | null>(null);
   const [archiveInProgress, setArchiveInProgress] = useState(false);
   const [pendingGroupEdit, setPendingGroupEdit] = useState<PendingGroupEdit | null>(null);
+  const [pendingSessionRename, setPendingSessionRename] = useState<SidebarSessionRename | null>(
+    null,
+  );
+  const sessionRenameRevisionRef = useRef(0);
+  const sessionRenameFocusRevisionRef = useRef(0);
   const [sidebarError, setSidebarError] = useState<string | null>(null);
   const [pendingRestart, setPendingRestart] = useState<{
     sessionId: SessionId;
@@ -216,6 +222,49 @@ export function Sidebar({
     setDragSource(null);
     setDropTargetKey(null);
   }, []);
+
+  const beginSessionRename = (workspacePath: string, entry: SidebarSessionEntry): void => {
+    if (!entry.filePath) return;
+    clearSessionDrag();
+    groupFocusRevisionRef.current++;
+    setPendingSessionRename({
+      workspacePath,
+      filePath: entry.filePath,
+      initialName: entry.name,
+      revision: ++sessionRenameRevisionRef.current,
+    });
+  };
+
+  const finishSessionRename = useCallback((revision: number): void => {
+    if (!sidebarRef.current) return;
+    setPendingSessionRename((current) => (current?.revision === revision ? null : current));
+  }, []);
+
+  const takeSessionRenameFocus = useCallback((revision: number): boolean => {
+    // A membership rollback can remount a retired editor before its cleanup
+    // closes it. Only the originating gesture, not a remount, may take focus.
+    if (revision <= sessionRenameFocusRevisionRef.current) return false;
+    sessionRenameFocusRevisionRef.current = revision;
+    return true;
+  }, []);
+
+  const handleSessionDoubleClick = (
+    event: React.MouseEvent<HTMLDivElement>,
+    workspacePath: string,
+    entry: SidebarSessionEntry,
+  ): void => {
+    if (
+      event.button !== 0 ||
+      (event.target instanceof Element &&
+        event.target.closest(
+          "button, input, textarea, select, a, [contenteditable=true], .sidebar__session-rename",
+        ))
+    )
+      return;
+    event.preventDefault();
+    event.stopPropagation();
+    beginSessionRename(workspacePath, entry);
+  };
 
   useLayoutEffect(() => {
     const root = sidebarRef.current;
@@ -329,9 +378,10 @@ export function Sidebar({
     entry: SidebarSessionEntry,
     groupId: string | null,
     isPinned: boolean,
+    editingName: boolean,
   ): React.HTMLAttributes<HTMLDivElement> => {
     const filePath = entry.filePath;
-    if (!filePath) return { draggable: false };
+    if (!filePath || editingName) return { draggable: false };
     const canReorderPinned = (event: React.DragEvent): boolean => {
       const source = validatedDragSource(event);
       return (
@@ -1098,6 +1148,22 @@ export function Sidebar({
                                 {!group?.collapsed && (
                                   <>
                                     {visibleSessions.map((entry) => {
+                                      const rename =
+                                        pendingSessionRename?.workspacePath === ws.path &&
+                                        pendingSessionRename.filePath === entry.filePath
+                                          ? pendingSessionRename
+                                          : undefined;
+                                      const sessionName = (
+                                        <SidebarSessionName
+                                          name={entry.name}
+                                          sessionId={
+                                            entry.kind === "live" ? entry.sessionId : undefined
+                                          }
+                                          rename={rename}
+                                          onFinish={finishSessionRename}
+                                          takeFocus={takeSessionRenameFocus}
+                                        />
+                                      );
                                       if (entry.kind === "live") {
                                         const liveSession = sessions.get(entry.sessionId);
                                         // A requesting tool may still be in flight while
@@ -1109,23 +1175,45 @@ export function Sidebar({
                                           entry.filePath != null && pinnedSet.has(entry.filePath);
                                         return (
                                           <div
-                                            key={entry.sessionId}
+                                            key={entry.filePath ?? entry.sessionId}
                                             data-session-file={entry.filePath}
                                             role="button"
                                             tabIndex={0}
-                                            className={`sidebar__session fade-scope ${activeSessionId === entry.sessionId ? "sidebar__session--active" : ""} ${isPinned ? "sidebar__session--pinned" : ""}`}
+                                            className={`sidebar__session fade-scope ${activeSessionId === entry.sessionId ? "sidebar__session--active" : ""} ${isPinned ? "sidebar__session--pinned" : ""} ${rename ? "sidebar__session--renaming" : ""}`}
                                             {...sessionDragProps(
                                               ws.path,
                                               entry,
                                               group?.id ?? null,
                                               isPinned,
+                                              rename !== undefined,
                                             )}
+                                            title={
+                                              entry.filePath ? "Double-click to rename" : undefined
+                                            }
+                                            aria-keyshortcuts={entry.filePath ? "F2" : undefined}
+                                            onDoubleClick={(event) =>
+                                              handleSessionDoubleClick(event, ws.path, entry)
+                                            }
                                             onClick={() =>
                                               handleSelectLiveSession(entry.sessionId, ws.path)
                                             }
                                             onKeyDown={(e) => {
                                               if (e.target !== e.currentTarget) return;
-                                              if (e.key === "Enter" || e.key === " ") {
+                                              if (
+                                                e.key === "F2" &&
+                                                !e.nativeEvent.isComposing &&
+                                                !e.metaKey &&
+                                                !e.ctrlKey &&
+                                                !e.altKey &&
+                                                !e.shiftKey &&
+                                                entry.filePath
+                                              ) {
+                                                e.preventDefault();
+                                                beginSessionRename(ws.path, entry);
+                                                if (activeSessionId !== entry.sessionId) {
+                                                  handleSelectLiveSession(entry.sessionId, ws.path);
+                                                }
+                                              } else if (e.key === "Enter" || e.key === " ") {
                                                 e.preventDefault();
                                                 handleSelectLiveSession(entry.sessionId, ws.path);
                                               }
@@ -1141,9 +1229,7 @@ export function Sidebar({
                                                 unreadStatus={liveSession?.unreadStatus}
                                               />
                                             )}
-                                            <FadeText className="sidebar__session-name">
-                                              {entry.name}
-                                            </FadeText>
+                                            {sessionName}
                                             {entry.filePath && (
                                               <button
                                                 type="button"
@@ -1228,19 +1314,36 @@ export function Sidebar({
                                           data-session-file={entry.filePath}
                                           role="button"
                                           tabIndex={0}
-                                          className={`sidebar__session fade-scope ${isPinned ? "sidebar__session--pinned" : ""}`}
+                                          className={`sidebar__session fade-scope ${isPinned ? "sidebar__session--pinned" : ""} ${rename ? "sidebar__session--renaming" : ""}`}
                                           {...sessionDragProps(
                                             ws.path,
                                             entry,
                                             group?.id ?? null,
                                             isPinned,
+                                            rename !== undefined,
                                           )}
+                                          title="Double-click to rename"
+                                          aria-keyshortcuts="F2"
+                                          onDoubleClick={(event) =>
+                                            handleSessionDoubleClick(event, ws.path, entry)
+                                          }
                                           onClick={() =>
                                             handleResumeSession(ws.path, entry.filePath)
                                           }
                                           onKeyDown={(e) => {
                                             if (e.target !== e.currentTarget) return;
-                                            if (e.key === "Enter" || e.key === " ") {
+                                            if (
+                                              e.key === "F2" &&
+                                              !e.nativeEvent.isComposing &&
+                                              !e.metaKey &&
+                                              !e.ctrlKey &&
+                                              !e.altKey &&
+                                              !e.shiftKey
+                                            ) {
+                                              e.preventDefault();
+                                              beginSessionRename(ws.path, entry);
+                                              handleResumeSession(ws.path, entry.filePath);
+                                            } else if (e.key === "Enter" || e.key === " ") {
                                               e.preventDefault();
                                               handleResumeSession(ws.path, entry.filePath);
                                             }
@@ -1250,9 +1353,7 @@ export function Sidebar({
                                             className="status-dot status-dot--cold"
                                             title="Not running"
                                           />
-                                          <FadeText className="sidebar__session-name">
-                                            {entry.name}
-                                          </FadeText>
+                                          {sessionName}
                                           <button
                                             type="button"
                                             className="sidebar__session-group-move"

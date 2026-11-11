@@ -112,6 +112,39 @@ warning color and attention dismissal across IPC. The opt-in browser URL
 `?sidebarDemo=1` supplies synthetic saved rows for manual group/visibility tests;
 its render test exercises create-and-assign without touching real session data.
 
+## Sidebar session-name coverage
+
+`Sidebar.rename.test.tsx` exercises the real sidebar with local authority
+fixtures: selected-field focus, live/stored row identity, F2, trim/unchanged/blank
+validation, Enter/blur deduplication, Escape and IME ownership, preserved
+organization, refusal/retry, failed and unknown outcomes, foreign/replaced
+owners, initial-readiness and confirmation timeouts, file replacement, detached
+editor retirement, late-completion focus safety, and focus-preserving retirement
+when an older membership save/rollback reparents an editor. These fixtures do not
+replace the real-SDK persistence gate.
+
+`tests/render/sidebar-rename.spec.mts` drives native browser double-click/F2,
+held initial authority, Escape during active work, delayed background-session
+confirmation plus a failed older group move's reparenting/focus race, explicit
+retry and minimum-window light/dark field/error geometry.
+It uses `?sidebarDemo=1` and synthetic names; preview rename updates only the
+target session's semantic snapshot. Its background-confirmation fixture seeds a
+saved conversation explicitly because the generic preview history loader is
+empty and normal empty-placeholder reaping must remain intact.
+
+`tests/e2e/sidebar-rename.spec.mts` uses the pristine pinned SDK without a model
+turn or provider. It natively double-clicks a cold pinned/grouped saved row,
+cancels, saves through the existing owner/cursor intent, observes the matching
+same-owner frame, and relaunches to verify discovery and F2. The original JSONL
+bytes must remain an exact prefix with one additional name entry; UUID, file
+path, authored messages, unrelated history and organization stay unchanged.
+This intentional metadata append is separate from organization-only journeys,
+which continue requiring entirely byte-identical histories. Setting
+`PIVIS_PACKAGED_EXECUTABLE` explicitly reuses this journey against a verified
+package with the same isolated fixture and plain-Node SDK host override as the
+packaged PTY gate. For non-disruptive personal validation, point it only at the
+build-directory executable, not either installed app.
+
 ## Gateway-spend coverage (personal fork)
 
 `src/shared/gateway-spend.test.ts` checks current UTC month-to-date boundaries

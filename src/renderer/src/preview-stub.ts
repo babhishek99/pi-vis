@@ -442,7 +442,7 @@ function semanticSnapshot(sessionId: SessionId): SemanticSnapshot {
     operationJournalTruncated: false,
     model: { id: currentModelId, provider: currentModelProvider },
     thinkingLevel: currentThinkingLevel,
-    ...(sidebarDemoEnabled ? { sessionName: runtime.sessionName } : {}),
+    ...(runtime.sessionName !== undefined ? { sessionName: runtime.sessionName } : {}),
     catalog: { notifications: [], statuses: {}, widgets: {}, capabilityDiagnostics: [] },
   };
 }
@@ -1599,7 +1599,11 @@ async function settleIntent(envelope: PreviewIntentEnvelope): Promise<void> {
         emitRuntimeState(envelope.sessionId, false, false);
         break;
       case "rename":
-        emitEvent({ type: "session_info_changed", name: intent.name });
+        runtime.sessionName = intent.name;
+        emit("session.events", {
+          sessionId: envelope.sessionId,
+          events: [{ type: "session_info_changed", name: intent.name }],
+        });
         break;
       case "reload":
         await sleep(50);

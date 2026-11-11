@@ -1,7 +1,8 @@
 # Personal fork development
 
-This checkout adds workspace-local sidebar session groups, a default-off
-**Show sub-agent sessions** preference, and optional gateway-recorded spending.
+This checkout adds workspace-local sidebar session groups, inline session
+renaming, a default-off **Show sub-agent sessions** preference, and optional
+gateway-recorded spending.
 It can run in development or as a separately packaged **Pi-Vis Personal.app**;
 neither path replaces the installed `/Applications/Pi-Vis.app`.
 
@@ -65,6 +66,11 @@ model calls by default.
 
 ## Organize sessions
 
+- Double-click a saved session row to rename it inline, or focus it and press
+  **F2**. **Enter** saves, **Escape** cancels before dispatch, and clicking away
+  saves a changed name. Blank names keep their draft with an error. Renaming
+  opens the conversation normally and uses Pi's existing session-name metadata;
+  it does not rename the file, rewrite messages, or interrupt running work.
 - Use the folder-plus action beside **New session** to create a group.
 - Drag a file-backed session onto a group header/section to move it, or onto
   **Ungrouped** to remove its assignment. Collapsed destinations open on drop;

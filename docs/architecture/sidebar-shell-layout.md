@@ -75,6 +75,47 @@ follow the archive convention. Confirmation closes the dialog immediately and
 leaves restart reachable during successor startup; startup failures surface through
 the ordinary session status and a toast.
 
+### Inline session names
+
+Double-click a file-backed session row to edit its name, or focus the row and
+press **F2**. The native single-line input selects the presented name; **Enter**
+saves a trimmed, nonempty value, **Escape** cancels an unsent edit, and blur
+commits a changed value. An unchanged name closes without a mutation; a blank
+name keeps its draft with an inline error. IME/composing and modified Enter or
+Escape do not submit or cancel. Row action buttons and session dragging are
+unavailable while editing, so selecting text cannot move, pin, archive or restart
+the session. Pathless pending sessions must acquire a saved file first.
+
+The ordinary first click still opens/selects the session. Stored and live rows
+share the durable file-path React key so that promotion during a native double-
+click does not remove its target or lose the editor. `SidebarSessionName.tsx`
+keeps only a local draft and bounded request correlation: it waits for that
+file's record and following semantic authority, dispatches the existing
+owner/cursor-bound `rename` intent once, and treats only its matching same-owner
+authority outcome as success. A receipt never changes the presented name.
+Initial-authority and confirmation waits are bounded to thirty seconds. Refusal,
+SDK failure, owner/file replacement, and unknown delivery preserve an editable
+draft with feedback, without automatically replaying a mutation. Blurring an
+error is not a retry; the user must press Enter again or edit a new draft. Escape can
+cancel a save still waiting for initial authority; once dispatched, the field
+awaits confirmation rather than trying to undo or interrupt Pi.
+
+The focused field owns Escape through a layout-effect claim; losing focus
+releases it even while a save settles. Cancel/success restores the row only if
+the field still owns focus. Late completions cannot steal another control's
+focus, and collapse, filtering, pagination or file transitions retire detached
+editors rather than reopening stale drafts. Initial focus is gesture-revision
+scoped and single-use, so an older group save/rollback that reparents an editor
+cannot focus its temporary replacement before retirement. Pins, group membership, workspace
+order and section pagination retain their normal semantics.
+
+This is an intentional session-metadata operation, unlike settings-only group
+renaming. The existing SDK host calls public `AgentSession.setSessionName`,
+which appends `session_info` to the same saved conversation. Pi remains the
+semantic/persistence authority: there is no renderer label override, alternate
+rename IPC, filesystem rename, transcript rewrite or agent interruption. After
+confirmation the normal workspace discovery refresh exposes the persisted name.
+
 ### Session groups and sub-agent visibility
 
 The **Create session group** folder action beside **New session** creates a named

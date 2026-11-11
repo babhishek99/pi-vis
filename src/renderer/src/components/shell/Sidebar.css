@@ -542,6 +542,57 @@
   display: block;
 }
 
+.sidebar__session--renaming,
+.sidebar__session--renaming:active {
+  cursor: default;
+}
+
+.sidebar__session--renaming
+  :is(
+    .sidebar__session-group-move,
+    .sidebar__session-restart,
+    .sidebar__session-archive,
+    .sidebar__session-pin
+  ) {
+  display: none;
+}
+
+.sidebar__session-rename {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.sidebar__session-name-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  margin: -1px 0;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  color: var(--text);
+  font: inherit;
+  line-height: inherit;
+  cursor: text;
+  outline: none;
+}
+
+.sidebar__session-name-input:focus {
+  border-color: var(--accent);
+}
+
+.sidebar__session-rename-status {
+  color: var(--text-muted);
+  font-size: 0.857em;
+  overflow-wrap: anywhere;
+}
+
+.sidebar__session-rename-status--error {
+  color: var(--danger);
+}
+
 .sidebar__session-meta {
   font-size: 0.857em;
   color: var(--text-ghost);

@@ -11,8 +11,9 @@ extensions.
   off work across multiple projects from one workspace sidebar and switch between
   them while they run — no juggling terminal tabs.
 - **Organized session sidebar.** Create named, collapsible groups, move sessions
-  between them, and keep pins ordered within each section. Generated sub-agent
-  sessions are hidden by default; show them from Settings when needed.
+  between them, and keep pins ordered within each section. Double-click a saved
+  session to rename it inline. Generated sub-agent sessions are hidden by default;
+  show them from Settings when needed.
 - **Built-in diff viewer.** See exactly what an agent changed in a
   syntax-highlighted unified or split diff, with branch-relative comparisons. A
   live changed-files badge updates as the agent edits.
