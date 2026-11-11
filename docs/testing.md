@@ -40,6 +40,25 @@ npm run test:full          # typecheck, lint, unit, build, render, Electron E2E
 - `tests/e2e/unified-panel.spec.mts` drives the real Electron renderer against the fake Unified host. It proves that the terminal stays input-enabled while a cleared submission awaits a delayed refusal, a rapidly typed second draft survives the bailed response, and each Enter produces exactly one distinct intent. It also exercises an untouched Input→Extension→Input round trip, active-Extension focus transfer, and an immediate post-Enter Input reveal that cannot remount the submitted renderer draft. Lower-level host/store tests extend the same invariant across claim expiry, renderer loss/remount, multiple rapid submissions, transformed file/image/diff-comment payloads, and host restart recovery.
 - `tests/lifecycle-boundary-model.test.mts` exhaustively enumerates the finite internal operation/boundary/lifecycle-cut reference model for submissions, effectful commands, reload, ESC, editor patches, picker continuations, and claimed/unclaimed unified actions, then runs reproducible generated schedules over the same state space. The model explicitly checks one dispatch per intent, terminal-versus-review exclusivity, permanent `outcome_unknown` replay refusal, correlated Composer non-clearing after a lifecycle cut, and zero admission while unavailable, transitioning, closing, or identity-stale. It is not treated as implementation conformance by itself: deferred-promise tests in `bridge.test.mjs`, `state-authority.test.mjs`, `session-registry.test.ts`, and `sessions-store.test.ts` drive the real adapters at those cuts (including active-command/replacement overlap, predecessor-epoch terminal submission, command settlement after epoch change, close freeze, stale picker/editor continuation, and unified expiry). The model is not a universal proof of arbitrary JavaScript schedules.
 
+## Tab-scoped stop-all coverage
+
+`resources/pi-session-host/subagent-stop.test.mjs` drives the production host client/handler: synchronous parent-first dispatch despite throwing selectors/getters, independent bounded discovery/reply deadlines, strict receipt sanitation, absent/unsupported/failed support, idle-parent background evidence, owner/epoch/transition/closing fences, same-request replay, and synchronous newer-Escape reentry. `bridge.test.mjs`, `src/main/pi/session-host.test.ts`, and `src/shared/pi-protocol/subagent-stop.test.ts` pin direct transport without semantic admission, main-assigned monotonic sequences, exact acknowledgement ownership, and rejection of malformed counts, private fields, or invented settlement statuses. Store tests fence both late success and error toast effects after owner replacement. The fake-host Escape helper sends the same expected-host/epoch/sequence wire fields and parses the typed result.
+
+`tests/render/esc-interrupt.spec.mts` uses canned host receipts to test native Escape dispatch while the parent is idle, ignored modifiers/IME, unsupported-support warnings after parent interruption, and dialog/editor/notification ownership. Existing routed-panel, sidebar drag, rename, and group-dialog journeys retain their exclusive key ownership. Preview receipts do not prove real subagent cancellation.
+
+The real integration is `tests/e2e/tab-scoped-stop.spec.mts`, explicitly enabled with a production `pi-subagents` source checkout and its dependencies installed:
+
+```sh
+env -u ELECTRON_RUN_AS_NODE -u PIVIS_PACKAGED_EXECUTABLE \
+  PI_E2E=0 PI_E2E_LIVE=0 PIVIS_REAL_USER_HOST_SMOKE=0 \
+  PIVIS_TEST_SUBAGENTS_SOURCE_DIR=/absolute/path/to/pi-subagents \
+  npm run test:e2e -- tab-scoped-stop.spec.mts --workers=1
+```
+
+Without that opt-in it skips rather than using the installed extension. The fixture checks source protocol 3, copies its production source/dependencies to temporary resources, and resolves public Pi peers through the app's pristine pinned 1.4.0 SDK. A test-only probe observes public events and gates provider preparation; it does not implement cancellation. Temporary app/agent/session profiles and a scripted loopback provider avoid installed extensions, histories, credentials, or paid models.
+
+Native Escape in tab A must stop its streaming parent, running/queued agents, workflow child, grandchild, and workflow while B's original parent/child finish. The journey also stops an idle parent's background child, releases stopped hooks to prove no late HTTP dispatch, checks schedule bytes unchanged, admits fresh parent/child work without reset/rebind, and validates actual provider requests and JSONL. This is source integration, not packaged/installed-app verification, and does not claim arbitrary provider/custom-tool settlement. Extension-side manager/runner/root and real-SDK loopback tests separately cover retained-session generation/replacement, compaction/auth/deferred/warming races, worker termination, startup/mention races, handoff/ordinary wait behavior, and future schedule fires.
+
 ## Direct Shell Turn coverage
 
 Run these focused gates for Shell draft, PTY, protocol, transcript, or Shell Turn UI changes:

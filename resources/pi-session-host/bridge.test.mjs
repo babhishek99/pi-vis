@@ -2107,7 +2107,14 @@ describe("setupCommandBridge — target intent dispatch", () => {
     ).resolves.toMatchObject({ status: "admitted" });
     await vi.waitFor(() => expect(session.modelRuntime.refresh).toHaveBeenCalledOnce());
 
-    await expect(handleEscape("cancel-delayed-user-bash")).resolves.toMatchObject({
+    await expect(
+      handleEscape({
+        requestId: "cancel-delayed-user-bash",
+        sequence: 1,
+        expectedHostInstanceId: "test-host",
+        expectedSessionEpoch: 0,
+      }),
+    ).resolves.toMatchObject({
       disposition: "abort_requested",
       target: "bash",
     });
@@ -3541,7 +3548,14 @@ describe("setupCommandBridge — target intent dispatch", () => {
         await expect(dispatchIntent(request)).resolves.toMatchObject({ status: "admitted" });
         await fetchStarted.promise;
         if (cancel)
-          await expect(handleEscape("cancel-radius-share")).resolves.toMatchObject({
+          await expect(
+            handleEscape({
+              requestId: "cancel-radius-share",
+              sequence: 1,
+              expectedHostInstanceId: "test-host",
+              expectedSessionEpoch: 0,
+            }),
+          ).resolves.toMatchObject({
             disposition: "abort_requested",
             target: "command",
           });
@@ -5559,7 +5573,12 @@ describe("setupCommandBridge — command mapping", () => {
     });
     await vi.waitFor(() => expect(steering).toEqual(["bridge appended"]));
 
-    const escaped = await handleEscape("bridge-escape");
+    const escaped = await handleEscape({
+      requestId: "bridge-escape",
+      sequence: 1,
+      expectedHostInstanceId: "test-host",
+      expectedSessionEpoch: 0,
+    });
     await expect(pending).resolves.toMatchObject({ disposition: "outcome_unknown" });
     expect(
       send.mock.calls

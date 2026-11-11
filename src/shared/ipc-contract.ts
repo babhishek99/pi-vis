@@ -336,6 +336,7 @@ export interface IpcInvokeContract {
     req: { sessionId: SessionId; intentId: string; expectedOwner: RuntimeIdentity };
     res: { acknowledged: boolean };
   };
+  /** Tab-local parent + subagent stop request; receipts never imply settlement. */
   "session.escape": {
     req: {
       sessionId: SessionId;

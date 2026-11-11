@@ -10,6 +10,7 @@ import {
 import { RADIUS_PROVIDER_ID, configureRadiusMcp, inspectRadiusMcpConfig } from "./radius-mcp.mjs";
 import { shareSessionViaRadius } from "./session-share.mjs";
 import { SHELL_ADMISSION_CANCELLED_CODE, createStateAuthority } from "./state-authority.mjs";
+import { createTabEscapeHandler } from "./subagent-stop.mjs";
 import { createToolRenderer } from "./tool-renderer.mjs";
 
 function exitSignalName(value) {
@@ -318,6 +319,7 @@ export function setupCommandBridge({
   requestTransitionPermit = async () => ({ allowed: true, reason: "test/local permit" }),
   initialBinding = false,
   initialPresentedSessionFile,
+  getSubagentStopClient = () => undefined,
   lifecycleUiTracker = { track: (promise) => promise },
   uiState = {
     catalogSnapshot: () => ({}),
@@ -1657,9 +1659,11 @@ export function setupCommandBridge({
     return authority.submit(msg.submission);
   }
 
-  async function handleEscape(requestId) {
-    return authority.requestEscape(requestId);
-  }
+  const handleEscape = createTabEscapeHandler({
+    authority,
+    getSession: () => _session,
+    getStopClient: getSubagentStopClient,
+  });
 
   async function handleReload(alreadySerialized = false, reloadEditorCommand = undefined) {
     // Repeat child-owned admission immediately before transition creation. The

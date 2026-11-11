@@ -12,7 +12,8 @@
  * stubbed `window.pivis`. Test hooks live on `window.__pivisPreview`
  * (see preview-stub.ts).
  */
-import { expect, test } from "@playwright/test";
+import { type Page, expect, test } from "@playwright/test";
+import type { EscapeResult } from "../../src/shared/pi-protocol/runtime-state.js";
 
 type PreviewHooks = {
   abortCalls: number;
@@ -40,7 +41,7 @@ async function getHooks(page: import("@playwright/test").Page): Promise<PreviewH
   });
 }
 
-async function startStreaming(page: import("@playwright/test").Page): Promise<void> {
+async function waitForBaseline(page: Page): Promise<void> {
   // Wait for the initial authority baseline before publishing the fake turn;
   // otherwise a late baseline can overwrite its streaming snapshot.
   await expect
@@ -57,6 +58,10 @@ async function startStreaming(page: import("@playwright/test").Page): Promise<vo
       { timeout: 10_000 },
     )
     .toBe(true);
+}
+
+async function startStreaming(page: Page): Promise<void> {
+  await waitForBaseline(page);
   await page.evaluate(() => {
     (window as unknown as { __pivisPreview: PreviewHooks }).__pivisPreview.startStreaming();
   });
@@ -77,7 +82,84 @@ async function startStreaming(page: import("@playwright/test").Page): Promise<vo
     .toBe(true);
 }
 
+async function receiptFixture(page: Page, status: "requested" | "unsupported"): Promise<void> {
+  await page.evaluate((resultStatus) => {
+    const invoke = Reflect.get(window.pivis, "invoke") as (...args: unknown[]) => Promise<unknown>;
+    Reflect.set(window.pivis, "invoke", async (...args: unknown[]) => {
+      const result = await invoke(...args);
+      if (args[0] !== "session.escape") return result;
+      const parent = result as EscapeResult;
+      return resultStatus === "requested"
+        ? {
+            ...parent,
+            disposition: "abort_requested",
+            target: "subagents",
+            subagents: {
+              status: "requested",
+              agents: 1,
+              workflows: 0,
+              pendingOperations: false,
+              pendingNotifications: false,
+            },
+          }
+        : {
+            ...parent,
+            disposition: "outcome_unknown",
+            subagents: { status: "unsupported" },
+            message:
+              "Parent interruption was handled, but this subagent extension needs the stop-all update.",
+          };
+    });
+  }, status);
+}
+
 test.describe("ESC-to-interrupt — renderer", () => {
+  test("idle-parent background stop still reaches the host; IME and modifiers do not", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    const textarea = page.locator(".composer__textarea");
+    await expect(textarea).toBeEnabled({ timeout: 20_000 });
+    await waitForBaseline(page);
+    await receiptFixture(page, "requested");
+    const before = (await getHooks(page)).abortCalls;
+    await page.evaluate(() => {
+      for (const options of [
+        { shiftKey: true },
+        { ctrlKey: true },
+        { altKey: true },
+        { metaKey: true },
+        { isComposing: true },
+      ]) {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "Escape",
+            bubbles: true,
+            cancelable: true,
+            ...options,
+          }),
+        );
+      }
+    });
+    expect((await getHooks(page)).abortCalls).toBe(before);
+    await textarea.focus();
+    await page.keyboard.press("Escape");
+    await expect.poll(async () => (await getHooks(page)).abortCalls).toBe(before + 1);
+    await expect(page.locator(".notification-card--warning")).toHaveCount(0);
+  });
+
+  test("an unsupported extension warns only after parent interruption", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator(".composer__textarea")).toBeEnabled({ timeout: 20_000 });
+    await startStreaming(page);
+    await receiptFixture(page, "unsupported");
+    const before = (await getHooks(page)).abortCalls;
+    await page.keyboard.press("Escape");
+    await expect.poll(async () => (await getHooks(page)).abortCalls).toBe(before + 1);
+    await expect(page.locator(".notification-card--warning")).toContainText(
+      "needs the stop-all update",
+    );
+  });
   test("(a) two-press under rapid ESC: first closes autocomplete, second aborts", async ({
     page,
   }) => {

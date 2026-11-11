@@ -94,6 +94,83 @@ describe("SessionHost", () => {
     vi.useRealTimers();
   });
 
+  describe("direct Escape transport", () => {
+    it("refuses dispatch before a host identity exists", async () => {
+      await expect(host.escape("escape-not-ready")).rejects.toThrow("Session host is not ready");
+      expect(fake.sent.some((message) => message.type === "escape")).toBe(false);
+    });
+
+    it("assigns monotonic sequences and exact owner identity without semantic ingress", async () => {
+      fake.emitReady("1.4.0");
+      await host.waitForReady();
+      for (const sequence of [1, 2]) {
+        const pending = host.escape(`escape-${sequence}`);
+        const request = fake.sent.filter((message) => message.type === "escape").at(-1);
+        if (!request) throw new Error("No Escape request was dispatched");
+        expect(request).toMatchObject({
+          type: "escape",
+          requestId: `escape-${sequence}`,
+          sequence,
+          expectedHostInstanceId: fake.hostInstanceId,
+          expectedSessionEpoch: 0,
+        });
+        const receipt = {
+          requestId: request.requestId,
+          hostInstanceId: fake.hostInstanceId,
+          sessionEpoch: 0,
+          disposition: "abort_requested",
+          target: "subagents",
+          subagents: {
+            status: "requested",
+            agents: 2,
+            workflows: 1,
+            pendingOperations: false,
+            pendingNotifications: true,
+          },
+        };
+        fake.emitWire({ type: "response", id: request.id, success: true, data: receipt });
+        await expect(pending).resolves.toEqual(receipt);
+      }
+      expect(fake.sent.some((message) => message.type === "dispatch_intent")).toBe(false);
+    });
+
+    it.each([
+      { requestId: "different-request" },
+      { hostInstanceId: "different-host" },
+      { sessionEpoch: 1 },
+      {
+        subagents: {
+          status: "requested",
+          agents: -1,
+          workflows: 0,
+          pendingOperations: false,
+          pendingNotifications: false,
+        },
+      },
+      { subagents: { status: "failed", error: "private-extension-error" } },
+      { subagents: { status: "settled" } },
+    ])("rejects mismatched or unsanitized acknowledgement %j", async (override) => {
+      fake.emitReady("1.4.0");
+      await host.waitForReady();
+      const pending = host.escape("escape-validation");
+      const request = fake.sent.find((message) => message.type === "escape");
+      if (!request) throw new Error("No Escape request was dispatched");
+      fake.emitWire({
+        type: "response",
+        id: request.id,
+        success: true,
+        data: {
+          requestId: "escape-validation",
+          hostInstanceId: fake.hostInstanceId,
+          sessionEpoch: 0,
+          disposition: "already_inactive",
+          ...override,
+        },
+      });
+      await expect(pending).rejects.toThrow("Invalid Escape acknowledgement");
+    });
+  });
+
   it("forwards a pathless session-file lock request and replies with a permit", () => {
     const discovered = vi.fn();
     host.on("initialSessionFile", discovered);

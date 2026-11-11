@@ -57,6 +57,7 @@ import {
   canonicalizeConfinedSessionStartEvent,
 } from "./session-lineage.mjs";
 import { createShellPtyController } from "./shell-pty.mjs";
+import { createSubagentStopClient } from "./subagent-stop.mjs";
 import { applyTuiRuntimeSettings, createDialogResolver, createUIContext } from "./ui-context.mjs";
 import { createUiRequestSender } from "./ui-request-router.mjs";
 
@@ -624,6 +625,7 @@ async function handleInit(msg) {
       runtimeResumeState,
     );
 
+    const subagentStopClients = new WeakMap();
     const createRuntime = async ({
       cwd: sc,
       agentDir: ad,
@@ -659,6 +661,8 @@ async function handleInit(msg) {
           "Could not migrate the Azure account; check the global auth.json configuration",
         );
       }
+      const eventBus = pi.createEventBus();
+      const subagentStopClient = createSubagentStopClient(eventBus);
       const services = await pi.createAgentSessionServices({
         cwd: sc,
         agentDir: ad,
@@ -666,6 +670,7 @@ async function handleInit(msg) {
         // this factory anew and therefore receives a fresh timeout signal.
         modelRuntimeSignal: AbortSignal.timeout(15_000),
         resourceLoaderOptions: {
+          eventBus,
           extensionFactories: builtinExtensionFactories,
         },
         resourceLoaderReloadOptions: { resolveProjectTrust: resolveTrust },
@@ -699,6 +704,7 @@ async function handleInit(msg) {
         sessionStartEvent: presentedSessionStartEvent,
         ...sessionOptions,
       });
+      subagentStopClients.set(result.session, subagentStopClient);
       return {
         ...result,
         services,
@@ -823,6 +829,7 @@ async function handleInit(msg) {
           })),
       },
       initialBinding: true,
+      getSubagentStopClient: (target) => subagentStopClients.get(target),
       lifecycleUiTracker,
       uiState: {
         ...uiState,
@@ -970,7 +977,7 @@ process.on("message", async (msg) => {
       }
 
       case "escape": {
-        const result = await handleEscape?.(msg.requestId);
+        const result = await handleEscape?.(msg);
         send({ type: "response", id: msg.id, success: true, data: result });
         break;
       }

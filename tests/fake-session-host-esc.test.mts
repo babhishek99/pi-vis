@@ -8,6 +8,7 @@ import {
   AuthorityAttachBaselineSchema,
   AuthorityFrameSchema,
   AuthorityPresentationPublicationSchema,
+  EscapeResultSchema,
 } from "../src/shared/pi-protocol/runtime-state.js";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/fake-session-host.mjs", import.meta.url));
@@ -86,9 +87,19 @@ describe("fake session host ESC process semantics", () => {
   };
   const requestEscape = async () => {
     const id = `escape-${++requestSequence}`;
-    send({ type: "escape", id, requestId: `request-${requestSequence}` });
+    const snapshot = latestSnapshot();
+    if (!snapshot) throw new Error("Missing runtime snapshot");
+    send({
+      type: "escape",
+      id,
+      requestId: `request-${requestSequence}`,
+      expectedHostInstanceId: snapshot.hostInstanceId,
+      expectedSessionEpoch: snapshot.sessionEpoch,
+      sequence: requestSequence,
+    });
     const result = await response(id);
-    return result.data as { disposition: string; target?: string; restorationId?: string };
+    expect(result.success).toBe(true);
+    return EscapeResultSchema.parse(result.data);
   };
   const command = (type: string, extra: Record<string, unknown> = {}) => {
     const id = `command-${++requestSequence}`;

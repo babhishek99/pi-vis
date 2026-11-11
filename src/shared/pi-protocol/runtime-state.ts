@@ -4,6 +4,7 @@ import { ExtensionUiRequestSchema } from "./extension-ui.js";
 import { MarkdownTransformBatchSchema } from "./markdown-transform.js";
 import { PanelEventSchema } from "./panel-events.js";
 import { PiRpcResponseSchema, SessionTreeEntrySchema } from "./responses.js";
+import { SubagentStopReceiptSchema } from "./subagent-stop.js";
 import { ThinkingLevelSchema } from "./thinking.js";
 
 export const RuntimeAvailabilitySchema = z.enum(["available", "unavailable", "transitioning"]);
@@ -130,10 +131,20 @@ export const EscapeResultSchema = z.object({
   sessionEpoch: z.number().int().nonnegative(),
   disposition: EscapeDispositionSchema,
   target: z
-    .enum(["navigation", "compaction", "retry", "streaming", "bash", "command", "editor"])
+    .enum([
+      "navigation",
+      "compaction",
+      "retry",
+      "streaming",
+      "bash",
+      "command",
+      "editor",
+      "subagents",
+    ])
     .optional(),
   message: z.string().optional(),
   restorationId: z.string().optional(),
+  subagents: SubagentStopReceiptSchema.optional(),
 });
 export type EscapeResult = z.infer<typeof EscapeResultSchema>;
 

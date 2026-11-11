@@ -4033,6 +4033,14 @@ const buildSessionsStore = (
     if (!session) return;
     const owner = escapeOwner(session);
     if (!owner) return;
+    const stillOwned = (): boolean => {
+      const latest = get().sessions.get(sessionId);
+      const current = latest && escapeOwner(latest);
+      return (
+        current?.hostInstanceId === owner.hostInstanceId &&
+        current.sessionEpoch === owner.sessionEpoch
+      );
+    };
     const requestId = crypto.randomUUID();
     void window.pivis
       .invoke("session.escape", {
@@ -4042,6 +4050,7 @@ const buildSessionsStore = (
         expectedSessionEpoch: owner.sessionEpoch,
       })
       .then((result) => {
+        if (!stillOwned()) return;
         if (result.disposition !== "failed" && result.disposition !== "outcome_unknown") return;
         get().addToast(
           sessionId,
@@ -4050,6 +4059,7 @@ const buildSessionsStore = (
         );
       })
       .catch((error) => {
+        if (!stillOwned()) return;
         const message = describeIpcError(error);
         if (message) get().addToast(sessionId, message, "error");
       });

@@ -36,6 +36,7 @@ import {
   type AuthorityPresentationPublication,
   AuthorityPresentationPublicationSchema,
   type EscapeResult,
+  EscapeResultSchema,
   HostEnvelopeSchema,
   type LifecyclePermitOperation,
   type LifecyclePermitVerdict,
@@ -50,6 +51,7 @@ import {
   SubmissionResultSchema,
   type TransitionBatch,
 } from "@shared/pi-protocol/runtime-state.js";
+import type { EscapeHostRequest } from "@shared/pi-protocol/subagent-stop.js";
 import { z } from "zod";
 import { appendDiagnostic } from "../diagnostics.js";
 import { forceKillProcessTree } from "./force-kill-process-tree.js";
@@ -419,6 +421,7 @@ export class SessionHost extends EventEmitter {
   public hostInstanceId?: string;
   public sessionEpoch = 0;
   private lastTransportSequence = 0;
+  private escapeSequence = 0;
   private lastControlAt = Date.now();
   private controlGeneration = 0;
   /** A gap makes every ordinary frame untrustworthy until our state request
@@ -1673,9 +1676,26 @@ export class SessionHost extends EventEmitter {
   }
 
   async escape(requestId: string): Promise<EscapeResult> {
-    const response = await this.requestHost({ type: "escape", requestId });
+    if (!this.hostInstanceId) throw new Error("Session host is not ready");
+    const request: EscapeHostRequest = {
+      type: "escape",
+      requestId,
+      expectedHostInstanceId: this.hostInstanceId,
+      expectedSessionEpoch: this.sessionEpoch,
+      sequence: ++this.escapeSequence,
+    };
+    const response = await this.requestHost(request);
     if (!response.success || !response.data) throw new Error(response.error ?? "Escape failed");
-    return response.data as EscapeResult;
+    const parsed = EscapeResultSchema.safeParse(response.data);
+    if (
+      !parsed.success ||
+      parsed.data.requestId !== requestId ||
+      parsed.data.hostInstanceId !== request.expectedHostInstanceId ||
+      parsed.data.sessionEpoch !== request.expectedSessionEpoch
+    ) {
+      throw new Error("Invalid Escape acknowledgement");
+    }
+    return parsed.data;
   }
 
   async requestAuthorityAttach(
