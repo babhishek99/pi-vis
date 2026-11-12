@@ -13,6 +13,13 @@ then resolves Pi's public registered tool renderer chain in the SDK host. Its
 bounded ANSI response is display-only; extension functions, arguments supplied
 by the renderer, and rendered output never become transcript or model authority.
 
+The parameter-free `get_subagent_activity` query is likewise display-only. It
+observes only the captured runtime's extension through public EventBus channels,
+with bounded plain data and pre/post owner checks, not semantic admission or
+state publication. The result never becomes canonical session authority, and
+missing/unsupported/failed support is unknown rather than an empty fleet or
+settled cancellation. See [agent activity](agent-activity.md).
+
 `/model [search]` and `/thinking [search]` are app-owned searchable selectors.
 An exact thinking argument is matched case-insensitively against the live
 available levels and otherwise reports that authoritative list. Header and

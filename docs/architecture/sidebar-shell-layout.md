@@ -204,6 +204,12 @@ once to document timeline zero, keeping late or reappearing dots exactly in phas
 animating an inherited property on `.sidebar__workspaces`, which would force frame-rate
 style recalculation across the full sidebar subtree.
 
+### Active-tab header agent tray
+
+Common `SessionControls` renders the read-only **Agents in this tab** trigger before the context meter, in both full and compact headers. It does not replace model/thinking, context/spend, notification, worktree/diff, or extension controls. The card is a body portal fitted to its actual trigger and remaining viewport; its pinned header/footer surround one padded vertical scroll owner with shared scrollbars and sibling overflow fades, so retained rows and omission notes remain reachable at 480×400. Full/compact reflow retires the departed tray's Escape claim rather than carrying an open predecessor surface into another mount.
+
+The trigger reports active/pending/unwinding agent counts and active workflow counts only for a valid same-owner read. Unknown is `?`; preparation/cleanup without a record is `…`, not an invented agent count. Actual parent/workflow relationships and missing-owner notes are display-only and independent of sidebar child hiding, saved-session classification, groups, pins, ordering and pagination. Opening focuses the list; outside focus dismissal does not steal focus. First Escape dismisses this exact newest normal claim without cancelling work. See [agent activity](agent-activity.md) for authority, privacy and lease rules.
+
 ### Optional gateway-spend widget
 
 When private launch configuration enables the Datadog audit adapter, a quiet

@@ -57,6 +57,7 @@ import {
   canonicalizeConfinedSessionStartEvent,
 } from "./session-lineage.mjs";
 import { createShellPtyController } from "./shell-pty.mjs";
+import { createSubagentActivityClient } from "./subagent-activity.mjs";
 import { createSubagentStopClient } from "./subagent-stop.mjs";
 import { applyTuiRuntimeSettings, createDialogResolver, createUIContext } from "./ui-context.mjs";
 import { createUiRequestSender } from "./ui-request-router.mjs";
@@ -626,6 +627,7 @@ async function handleInit(msg) {
     );
 
     const subagentStopClients = new WeakMap();
+    const subagentActivityClients = new WeakMap();
     const createRuntime = async ({
       cwd: sc,
       agentDir: ad,
@@ -663,6 +665,7 @@ async function handleInit(msg) {
       }
       const eventBus = pi.createEventBus();
       const subagentStopClient = createSubagentStopClient(eventBus);
+      const subagentActivityClient = createSubagentActivityClient(eventBus);
       const services = await pi.createAgentSessionServices({
         cwd: sc,
         agentDir: ad,
@@ -705,6 +708,7 @@ async function handleInit(msg) {
         ...sessionOptions,
       });
       subagentStopClients.set(result.session, subagentStopClient);
+      subagentActivityClients.set(result.session, subagentActivityClient);
       return {
         ...result,
         services,
@@ -830,6 +834,7 @@ async function handleInit(msg) {
       },
       initialBinding: true,
       getSubagentStopClient: (target) => subagentStopClients.get(target),
+      getSubagentActivityClient: (target) => subagentActivityClients.get(target),
       lifecycleUiTracker,
       uiState: {
         ...uiState,

@@ -40,6 +40,63 @@ npm run test:full          # typecheck, lint, unit, build, render, Electron E2E
 - `tests/e2e/unified-panel.spec.mts` drives the real Electron renderer against the fake Unified host. It proves that the terminal stays input-enabled while a cleared submission awaits a delayed refusal, a rapidly typed second draft survives the bailed response, and each Enter produces exactly one distinct intent. It also exercises an untouched Input→Extension→Input round trip, active-Extension focus transfer, and an immediate post-Enter Input reveal that cannot remount the submitted renderer draft. Lower-level host/store tests extend the same invariant across claim expiry, renderer loss/remount, multiple rapid submissions, transformed file/image/diff-comment payloads, and host restart recovery.
 - `tests/lifecycle-boundary-model.test.mts` exhaustively enumerates the finite internal operation/boundary/lifecycle-cut reference model for submissions, effectful commands, reload, ESC, editor patches, picker continuations, and claimed/unclaimed unified actions, then runs reproducible generated schedules over the same state space. The model explicitly checks one dispatch per intent, terminal-versus-review exclusivity, permanent `outcome_unknown` replay refusal, correlated Composer non-clearing after a lifecycle cut, and zero admission while unavailable, transitioning, closing, or identity-stale. It is not treated as implementation conformance by itself: deferred-promise tests in `bridge.test.mjs`, `state-authority.test.mjs`, `session-registry.test.ts`, and `sessions-store.test.ts` drive the real adapters at those cuts (including active-command/replacement overlap, predecessor-epoch terminal submission, command settlement after epoch change, close freeze, stale picker/editor continuation, and unified expiry). The model is not a universal proof of arbitrary JavaScript schedules.
 
+## Agent tray coverage
+
+`src/shared/pi-protocol/subagent-activity.test.ts` gates strict snapshot v1 shape,
+128/32 row caps before element visitation, bounded Unicode/UTF-8 data, exact
+visible-plus-omitted totals, raw/display state coherence, unique IDs and
+known-parent cycles, missing ancestors, parameter-free query policy, private
+field/accessor rejection and safe host copies that never serialize extension
+array `toJSON` payloads. `resources/pi-session-host/subagent-activity.test.mjs`
+uses public EventBus instances to prove runtime isolation, read-only channels,
+exact protocol 4 / `activitySnapshot: 1` discovery, absent/incompatible/failed
+support, scoped deadlines, late replies and listener cleanup.
+
+`bridge.test.mjs` checks that a read and its transition refusal publish no
+semantic state or activity counters, capture the actual session before callbacks,
+and reject owner replacement. `SessionHost` tests gate the 2,000 ms read deadline
+and revalidation/sanitization; registry tests recheck captured record/process/
+host/epoch after delayed responses, without mutation admission or retry into a
+successor. `AgentTray.test.tsx` mounts the real store and Escape handler for counts,
+actual hierarchy, authored task/phase, retained terminal rows, explicit omissions,
+unknown-not-zero behavior, serial polling, cleanup, newer-overlay priority,
+modifier/IME non-interruption, first-dismiss/next-interrupt, outside focus, owner
+replacement, synchronization loss, A→B→A and coalesced tab/availability/semantic
+cuts whose final owner/props are unchanged. These coalesced-cut regressions fail
+without synchronous lease retirement at the actual store boundary.
+
+`tests/render/agent-tray.spec.mts` leaves the default preview honestly unavailable
+and intercepts only activity reads with schema-validated synthetic fixtures. It
+checks retry from unsupported/failed support to a truly empty read; real DOM
+workflow/parent nesting; queued/starting/unwinding/finished rows; long shortened
+names/tasks and omissions; list focus and native End navigation through all rows;
+correct scroll ownership and top/bottom fades; native Escape and modifier/IME
+ownership; outside-focus safety; coexistence with model/context/direct-session
+spend; full/compact 480×400 light/dark geometry; semantic surfaces/rotors; and a
+held reply across a coalesced synchronization gap. Geometry checks include the
+actual scroller and fixed footer, not merely outer-card clipping. StrictMode
+fixtures capture the active pending read rather than assuming a single mount.
+
+Focused offline checks:
+
+```sh
+PI_E2E=0 PI_E2E_LIVE=0 PIVIS_REAL_USER_HOST_SMOKE=0 \
+  VITEST_MIN_THREADS=1 VITEST_MAX_THREADS=1 VITEST_MIN_FORKS=1 VITEST_MAX_FORKS=1 \
+  npx vitest run src/shared/pi-protocol/subagent-activity.test.ts \
+    resources/pi-session-host/subagent-activity.test.mjs \
+    src/renderer/src/components/session-header/AgentTray.test.tsx
+npm run test:render -- agent-tray.spec.mts --workers=1
+```
+
+The production-source two-tab journey below additionally reads real owner-bound
+snapshots and opens the real tray before, during and after held cancellation
+cleanup. Playwright transpilation and the normal source typecheck do not typecheck
+these `.spec.mts` files; separately compile changed specs and their support graph
+with strict/no-emit, DOM/DOM.Iterable and React JSX enabled. Do not suppress owner
+or result types to make fixtures compile. See [agent activity](architecture/agent-activity.md)
+for the architecture and provenance contract. All these fixtures are offline;
+none installs or updates an extension or consults a paid provider.
+
 ## Tab-scoped stop-all coverage
 
 `resources/pi-session-host/subagent-stop.test.mjs` drives the production host client/handler: synchronous parent-first dispatch despite throwing selectors/getters, independent bounded discovery/reply deadlines, strict receipt sanitation, absent/unsupported/failed support, idle-parent background evidence, owner/epoch/transition/closing fences, same-request replay, and synchronous newer-Escape reentry. `bridge.test.mjs`, `src/main/pi/session-host.test.ts`, and `src/shared/pi-protocol/subagent-stop.test.ts` pin direct transport without semantic admission, main-assigned monotonic sequences, exact acknowledgement ownership, and rejection of malformed counts, private fields, or invented settlement statuses. Store tests fence both late success and error toast effects after owner replacement. The fake-host Escape helper sends the same expected-host/epoch/sequence wire fields and parses the typed result.
@@ -55,9 +112,9 @@ env -u ELECTRON_RUN_AS_NODE -u PIVIS_PACKAGED_EXECUTABLE \
   npm run test:e2e -- tab-scoped-stop.spec.mts --workers=1
 ```
 
-Without that opt-in it skips rather than using the installed extension. The fixture checks source protocol 3, copies its production source/dependencies to temporary resources, and resolves public Pi peers through the app's pristine pinned 1.4.0 SDK. A test-only probe observes public events and gates provider preparation; it does not implement cancellation. Temporary app/agent/session profiles and a scripted loopback provider avoid installed extensions, histories, credentials, or paid models.
+Without that opt-in it skips rather than using the installed extension. The fixture checks source protocol 4, copies its production source/dependencies to temporary resources, and resolves public Pi peers through the app's pristine pinned 1.4.0 SDK. A test-only probe observes public events and gates provider preparation; it does not implement cancellation. Temporary app/agent/session profiles and a scripted loopback provider avoid installed extensions, histories, credentials, or paid models.
 
-Native Escape in tab A must stop its streaming parent, running/queued agents, workflow child, grandchild, and workflow while B's original parent/child finish. The journey also stops an idle parent's background child, releases stopped hooks to prove no late HTTP dispatch, checks schedule bytes unchanged, admits fresh parent/child work without reset/rebind, and validates actual provider requests and JSONL. This is source integration, not packaged/installed-app verification, and does not claim arbitrary provider/custom-tool settlement. Extension-side manager/runner/root and real-SDK loopback tests separately cover retained-session generation/replacement, compaction/auth/deferred/warming races, worker termination, startup/mention races, handoff/ordinary wait behavior, and future schedule fires.
+Owner-bound snapshots first prove A's three running plus one queued child, real workflow→outer→grandchild ownership and safe explicit label without the full workflow prompt/workspace; B's snapshot contains only B's child and no A IDs. The actual tray shows that hierarchy/count. Its first native Escape only dismisses, restores focus and leaves the parent/children streaming without a stop request or extra provider call. The next unclaimed Escape in tab A must stop its streaming parent, running/queued agents, workflow child, grandchild, and workflow while B's original parent/child finish. Held public cancellation hooks keep actual cleanup pending: snapshots and the tray must still show unwinding work, not a fabricated settled zero, while the queued child finishes without starting. Dismissing the tray during cleanup emits no second stop. After releases, A's four retained children are finished and B remains isolated. The journey also observes/stops an idle parent's background child, releases stopped hooks to prove no late HTTP dispatch, checks schedule bytes unchanged, admits fresh same-owner parent/child work with one active/four retained finished children without reset/rebind, and validates actual provider requests and JSONL. This is source integration, not packaged/installed-app verification, and does not claim arbitrary provider/custom-tool settlement. Extension-side manager/runner/root and real-SDK loopback tests separately cover retained-session generation/replacement, compaction/auth/deferred/warming races, worker termination, startup/mention races, handoff/ordinary wait behavior, and future schedule fires.
 
 ## Direct Shell Turn coverage
 
@@ -358,6 +415,9 @@ upload/body reads, response limits, sanitized errors and lost-response no-replay
 `tests/render/share.spec.mts` proves Radius bypasses the Gist effect;
 `tests/e2e/session-share.spec.mts` uses the real Pi session/public auth and an
 offline artifact endpoint fixture, verifies the selected branch/viewer metadata,
-and proves secrets and export-only metadata never enter persisted JSONL.
+and proves secrets and export-only metadata never enter persisted JSONL. It waits
+for a newer idle SDK snapshot with no agent activity from the exact session/owner
+observed streaming before sending Escape and `/share`: visible text is not settlement and
+must not be interrupted before Pi appends it to the exported branch.
 The focused real-Pi script includes these new share/renderer/default/restart journeys
 as well as the existing llama and historical runtime-regression gates.

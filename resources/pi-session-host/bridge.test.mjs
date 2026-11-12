@@ -44,7 +44,11 @@ function deferred() {
 it("has an explicit bridge branch for every classified command", () => {
   const source = fs.readFileSync(new URL("./bridge.mjs", import.meta.url), "utf8");
   for (const commandType of Object.keys(PI_COMMAND_POLICY)) {
-    expect(source, `missing bridge case for ${commandType}`).toContain(`case "${commandType}"`);
+    expect(source, `missing bridge branch for ${commandType}`).toContain(
+      commandType === "get_subagent_activity"
+        ? 'if (command.type === "get_subagent_activity")'
+        : `case "${commandType}"`,
+    );
   }
 });
 
@@ -296,6 +300,75 @@ function setup(sessionOverrides, bridgeOverrides = {}) {
     run,
   };
 }
+
+describe("owner-bound subagent activity read", () => {
+  it("captures the runtime and never publishes semantic state or calls a Pi mutation", async () => {
+    const read = vi.fn(async () => ({ status: "unavailable" }));
+    const getSubagentActivityClient = vi.fn(() => ({ read }));
+    const sendFrame = vi.fn();
+    const sendControl = vi.fn();
+    const { run, session, authority } = setup(undefined, {
+      getSubagentActivityClient,
+      sendFrame,
+      sendControl,
+    });
+    // Session subscription publishes its initial baseline before any query.
+    sendFrame.mockClear();
+    sendControl.mockClear();
+    const publish = vi.spyOn(authority, "publishSnapshot");
+    await expect(run({ type: "get_subagent_activity" })).resolves.toMatchObject({
+      success: true,
+      data: { status: "unavailable" },
+    });
+    expect(getSubagentActivityClient).toHaveBeenCalledWith(session);
+    expect(read).toHaveBeenCalledOnce();
+    expect(sendFrame).not.toHaveBeenCalled();
+    expect(sendControl).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(authority.hasActiveWork).toBe(false);
+    expect(session.prompt).not.toHaveBeenCalled();
+    expect(session.abort).not.toHaveBeenCalled();
+    expect(session.clearQueue).not.toHaveBeenCalled();
+    authority.stop();
+  });
+
+  it("does not publish a predecessor's rows after rebind, nor read from the successor", async () => {
+    const gate = deferred();
+    const read = vi.fn(() => gate.promise);
+    const getSubagentActivityClient = vi.fn(() => ({ read }));
+    const { run, runtime, authority } = setup(undefined, { getSubagentActivityClient });
+    const pending = run({ type: "get_subagent_activity" });
+    await runtime.setRebindSession.mock.calls[0][0](makeSession({ sessionId: "successor" }));
+    gate.resolve({ status: "ready", snapshot: { private: "predecessor rows must not escape" } });
+    const result = await pending;
+    expect(result).toMatchObject({ success: false, error: "Session changed during activity read" });
+    expect(result.data).toBeUndefined();
+    expect(read).toHaveBeenCalledOnce();
+    expect(getSubagentActivityClient).toHaveBeenCalledOnce();
+    authority.stop();
+  });
+
+  it("keeps unavailable support and private callback failures unknown", async () => {
+    const absent = setup();
+    await expect(absent.run({ type: "get_subagent_activity" })).resolves.toMatchObject({
+      success: true,
+      data: { status: "unavailable" },
+    });
+    absent.authority.stop();
+    const failed = setup(undefined, {
+      getSubagentActivityClient: () => ({
+        read: () => {
+          throw new Error("private callback detail");
+        },
+      }),
+    });
+    await expect(failed.run({ type: "get_subagent_activity" })).resolves.toMatchObject({
+      success: true,
+      data: { status: "failed" },
+    });
+    failed.authority.stop();
+  });
+});
 
 // ─── Wiring on setup ─────────────────────────────────────────────────────────
 

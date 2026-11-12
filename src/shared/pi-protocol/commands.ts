@@ -137,6 +137,11 @@ export const GetSessionStatsCommandSchema = BaseCommand.extend({
   type: z.literal("get_session_stats"),
 });
 
+// Host-only bounded read from this runtime's subagent extension, not history.
+export const GetSubagentActivityCommandSchema = BaseCommand.extend({
+  type: z.literal("get_subagent_activity"),
+});
+
 export const GetMessagesCommandSchema = BaseCommand.extend({
   type: z.literal("get_messages"),
 });
@@ -311,6 +316,7 @@ export const PiRpcCommandSchema = z.discriminatedUnion("type", [
   GetCommandsCommandSchema,
   GetStateCommandSchema,
   GetSessionStatsCommandSchema,
+  GetSubagentActivityCommandSchema,
   GetMessagesCommandSchema,
   GetForkMessagesCommandSchema,
   GetLastAssistantTextCommandSchema,
@@ -373,6 +379,7 @@ export const PI_COMMAND_POLICY = {
   get_commands: { class: "read_only" },
   get_state: { class: "read_only" },
   get_session_stats: { class: "read_only" },
+  get_subagent_activity: { class: "read_only" },
   get_messages: { class: "read_only" },
   get_fork_messages: { class: "read_only" },
   get_last_assistant_text: { class: "read_only" },

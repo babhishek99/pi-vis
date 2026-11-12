@@ -1162,6 +1162,9 @@ async function handlePreviewRequest(command: Record<string, unknown>): Promise<u
     }
     case "render_tool":
       return response("render_tool", { rendered: false });
+    case "get_subagent_activity":
+      // Preview has no extension runtime. Unknown is not an empty live fleet.
+      return response("get_subagent_activity", { status: "unavailable" });
     case "get_session_stats":
       return response("get_session_stats", {
         sessionId: DEMO_SESSION_ID,

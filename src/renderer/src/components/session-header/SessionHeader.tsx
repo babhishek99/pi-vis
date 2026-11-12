@@ -26,6 +26,7 @@ import { ScrollFadeFrame } from "../common/ScrollFadeFrame.js";
 import { IconAlert, IconCheck, IconChevronDown } from "../common/icons.js";
 import { UnifiedViewToggle } from "../ext-ui/UnifiedViewToggle.js";
 import { NotificationBellButton } from "../notifications/NotificationStack.js";
+import { AgentTray } from "./AgentTray.js";
 import { ContextMeter } from "./ContextMeter.js";
 import { WorktreeSwitcher } from "./WorktreeSwitcher.js";
 import "./SessionHeader.css";
@@ -1201,6 +1202,8 @@ export function SessionControls({
           </div>
         )}
       </div>
+
+      <AgentTray key={sessionId} sessionId={sessionId} observation={observation} />
 
       {/* Context ring — click for a usage breakdown dropdown. */}
       <ContextMeter sessionId={sessionId} />

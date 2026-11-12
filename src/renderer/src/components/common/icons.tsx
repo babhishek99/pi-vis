@@ -171,6 +171,16 @@ export function IconBell(props: IconProps): React.ReactElement {
   );
 }
 
+/** Agents — a small fleet, for runtime activity disclosure. */
+export function IconAgents(props: IconProps): React.ReactElement {
+  return (
+    <Icon {...props}>
+      <circle cx="4.5" cy="3.5" r="1.75" />
+      <path d="M1.5 10V8.5a3 3 0 0 1 6 0V10M8 2a1.75 1.75 0 0 1 0 3.5M9 6.5a2.5 2.5 0 0 1 1.5 2.25V10" />
+    </Icon>
+  );
+}
+
 /** Git branch — a trunk with one fork, for worktree chips. */
 export function IconBranch(props: IconProps): React.ReactElement {
   return (

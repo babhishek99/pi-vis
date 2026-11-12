@@ -320,6 +320,7 @@ export function setupCommandBridge({
   initialBinding = false,
   initialPresentedSessionFile,
   getSubagentStopClient = () => undefined,
+  getSubagentActivityClient = () => undefined,
   lifecycleUiTracker = { track: (promise) => promise },
   uiState = {
     catalogSnapshot: () => ({}),
@@ -2431,7 +2432,36 @@ export function setupCommandBridge({
         success: false,
         error: "Session replacement is in progress",
       });
-      authority.publishSnapshot();
+      if (command.type !== "get_subagent_activity") authority.publishSnapshot();
+      return;
+    }
+    if (command.type === "get_subagent_activity") {
+      // Pure display read: no semantic admission, activity counters or snapshot
+      // publication. Capture before any extension callback or await.
+      const target = _session;
+      const epoch = authority.sessionEpoch;
+      const current = () =>
+        _session === target &&
+        authority.sessionEpoch === epoch &&
+        !authority.isTransitioning &&
+        !authority.isClosing;
+      let data;
+      try {
+        const client = getSubagentActivityClient(target);
+        data = current() && client ? await client.read() : { status: "unavailable" };
+      } catch {
+        data = { status: "failed" };
+      }
+      if (!current()) {
+        send({
+          type: "response",
+          id,
+          success: false,
+          error: "Session changed during activity read",
+        });
+      } else {
+        send({ type: "response", id, success: true, data });
+      }
       return;
     }
     activeCommands++;

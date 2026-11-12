@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { PivisAPI } from "../../src/preload/index.js";
+import type { RendererPublication } from "../../src/shared/pi-protocol/runtime-state.js";
 import { expect, test } from "./support/invariants.mjs";
 import {
   REAL_SDK_PROVIDER_LATENCY,
@@ -10,6 +12,11 @@ import {
 } from "./support/real-sdk-host.mjs";
 import { createScriptedOpenAIProvider } from "./support/scripted-openai-provider.mjs";
 
+type ShareWindow = {
+  pivis: PivisAPI;
+  __shareStream?: Extract<RendererPublication, { plane: "semantic" }>;
+  __shareIdle: boolean;
+};
 const here = dirname(fileURLToPath(import.meta.url));
 
 test("real Pi /share uploads the selected branch to Radius through public settings and auth", async () => {
@@ -44,6 +51,28 @@ test("real Pi /share uploads the selected branch to Radius through public settin
   let launch: Awaited<ReturnType<typeof fixture.launch>> | undefined;
   try {
     launch = await fixture.launch();
+    const page = launch.window;
+    await page.evaluate(() => {
+      const observed = window as unknown as ShareWindow;
+      observed.__shareIdle = false;
+      observed.pivis.on("session.publication", (publication) => {
+        if (publication.plane !== "semantic") return;
+        const snapshot = publication.payload.terminalSnapshot;
+        if (!observed.__shareStream) {
+          if (snapshot.sdk.isStreaming) observed.__shareStream = publication;
+          return;
+        }
+        const started = observed.__shareStream;
+        const initial = started.payload.terminalSnapshot;
+        observed.__shareIdle =
+          publication.sessionId === started.sessionId &&
+          snapshot.owner.hostInstanceId === initial.owner.hostInstanceId &&
+          snapshot.owner.sessionEpoch === initial.owner.sessionEpoch &&
+          snapshot.snapshotSequence > initial.snapshotSequence &&
+          snapshot.sdk.isIdle &&
+          snapshot.activity.agent === undefined;
+      });
+    });
     const textarea = await openNewRealSession(launch.window);
     await selectLocalTestModel(launch.window, textarea);
     await textarea.fill("share this selected branch");
@@ -51,6 +80,11 @@ test("real Pi /share uploads the selected branch to Radius through public settin
     await expect(launch.window.getByText("SELECTED BRANCH READY", { exact: true })).toBeVisible({
       timeout: 60_000,
     });
+    // Visible streaming text is not settlement. Escape must not abort this
+    // response before Pi appends it to the branch that /share exports.
+    await expect
+      .poll(() => page.evaluate(() => (window as unknown as ShareWindow).__shareIdle))
+      .toBe(true);
     await textarea.fill("/share");
     await textarea.press("Escape");
     await textarea.press("Enter");

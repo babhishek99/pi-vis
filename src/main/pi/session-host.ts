@@ -51,6 +51,7 @@ import {
   SubmissionResultSchema,
   type TransitionBatch,
 } from "@shared/pi-protocol/runtime-state.js";
+import { SubagentActivityResultSchema } from "@shared/pi-protocol/subagent-activity.js";
 import type { EscapeHostRequest } from "@shared/pi-protocol/subagent-stop.js";
 import { z } from "zod";
 import { appendDiagnostic } from "../diagnostics.js";
@@ -188,6 +189,7 @@ const COMMAND_TIMEOUTS_MS: Readonly<Record<string, number>> = {
   switch_session: 60_000,
   fork: 60_000,
   reload: 60_000,
+  get_subagent_activity: 2_000,
 };
 
 /**
@@ -1555,6 +1557,19 @@ export class SessionHost extends EventEmitter {
   /** Execute an explicitly read-only query without exposing generic child command transport. */
   async query(command: PiReadOnlyCommand): Promise<PiRpcResponse> {
     const response = await this.sendHostQuery(command);
+    if (command.type === "get_subagent_activity") {
+      const parsed = response.success
+        ? SubagentActivityResultSchema.safeParse(response.data)
+        : null;
+      // Never forward malformed extension data or an extension-owned error.
+      return {
+        type: "response",
+        ...(response.id !== undefined ? { id: response.id } : {}),
+        command: command.type,
+        success: true,
+        data: parsed?.success ? parsed.data : { status: "failed" },
+      };
+    }
     // The child response is opaque; only restore its request correlation at
     // this transport boundary for the typed query result contract.
     return { ...response, command: command.type };

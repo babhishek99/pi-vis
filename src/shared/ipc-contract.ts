@@ -300,6 +300,7 @@ export interface IpcInvokeContract {
     res: TranscriptBlock[];
   };
   /** Owner-bound, retry-policy-governed read-only host API. */
+  /** Owner-bound reads only, including bounded get_subagent_activity display snapshots. */
   "session.query": { req: SessionQueryEnvelope; res: SessionQueryResult };
   /** The only text/image submission path. Pi chooses idle prompt vs queued delivery. */
   "session.submit": {

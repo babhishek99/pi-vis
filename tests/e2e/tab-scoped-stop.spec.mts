@@ -4,6 +4,10 @@ import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
 import type { PivisAPI } from "../../src/preload/index.js";
 import type { RendererPublication } from "../../src/shared/pi-protocol/runtime-state.js";
+import {
+  type ActivitySnapshot,
+  SubagentActivityResultSchema,
+} from "../../src/shared/pi-protocol/subagent-activity.js";
 import { expect, test } from "./support/invariants.mjs";
 import {
   PROJECT_ROOT,
@@ -70,6 +74,29 @@ async function snapshot(page: Page, name: string) {
   );
 }
 
+/** Uses the ordinary owner-bound read; never a global manager or trace-derived fleet. */
+async function activity(page: Page, name: string): Promise<ActivitySnapshot> {
+  const reply = await page.evaluate(async (root) => {
+    const observed = window as unknown as ObservedWindow;
+    const frame = observed.__tabStopFrames
+      .filter((frame) => frame.payload.terminalSnapshot.sessionName === root)
+      .at(-1);
+    if (!frame) throw new Error("Missing captured runtime owner");
+    return await observed.pivis.invoke("session.query", {
+      sessionId: frame.sessionId,
+      queryId: crypto.randomUUID(),
+      expectedOwner: frame.payload.terminalSnapshot.owner,
+      query: { type: "get_subagent_activity" },
+    });
+  }, name);
+  if (reply.status !== "ok" || !reply.response.success)
+    throw new Error("Activity read lost its captured owner");
+  const result = SubagentActivityResultSchema.parse(reply.response.data);
+  if (result.status !== "ready")
+    throw new Error(`Expected production snapshot support, got ${result.status}`);
+  return result.snapshot;
+}
+
 async function send(textarea: Locator, text: string): Promise<void> {
   await textarea.fill(text);
   await textarea.press("Enter");
@@ -80,7 +107,7 @@ async function send(textarea: Locator, text: string): Promise<void> {
 test("bare Escape stops the current tab's real subagents and workflow, not another tab", async () => {
   test.skip(
     !sourceDirectory,
-    "Set PIVIS_TEST_SUBAGENTS_SOURCE_DIR to the protocol-3 source checkout",
+    "Set PIVIS_TEST_SUBAGENTS_SOURCE_DIR to the protocol-4 source checkout",
   );
   test.setTimeout(240_000);
   const source = fs.realpathSync(resolve(sourceDirectory!));
@@ -90,7 +117,7 @@ test("bare Escape stops the current tab's real subagents and workflow, not anoth
     true,
   );
   expect(fs.readFileSync(join(source, "src/cross-extension-rpc.ts"), "utf8")).toContain(
-    "PROTOCOL_VERSION = 3",
+    "PROTOCOL_VERSION = 4",
   );
   const workflow = `export const meta = { name: "tab-stop", description: "Bounded cancellation fixture" };\nawait agent("STOP-A-WORKFLOW-OUTER", { label: "outer", agentType: "fixture-delegator" });\nawait agent("MUST-NOT-START-AFTER-STOP");\nreturn "late workflow result";\n`;
   const provider = await createScriptedOpenAIProvider([
@@ -258,6 +285,49 @@ test("bare Escape stops the current tab's real subagents and workflow, not anoth
     expect(fs.existsSync(join(gateDirectory, "STOP-A-CHILD-2.entered.json"))).toBe(false);
     const aBefore = await snapshot(page, "STOP-ROOT-A");
     expect(aBefore?.sdk.isStreaming).toBe(true);
+    const aActivity = await activity(page, "STOP-ROOT-A");
+    expect(aActivity.agentCounts).toEqual({
+      running: 3,
+      starting: 0,
+      queued: 1,
+      unwinding: 0,
+      finished: 0,
+    });
+    expect(aActivity.workflowCounts).toEqual({ running: 1, paused: 0, stopping: 0, finished: 0 });
+    const outer = aActivity.agents.find((row) => row.agentType === "fixture-delegator");
+    const grandchild = aActivity.agents.find((row) => row.task === "STOP-A-GRANDCHILD");
+    expect(outer?.task).toBe("outer");
+    expect(outer?.workflowId).toBe(aActivity.workflows[0]?.id);
+    expect(grandchild?.parentAgentId).toBe(outer?.id);
+    expect(aActivity.agents.find((row) => row.task === "STOP-A-CHILD-2")?.state).toBe("queued");
+    expect(JSON.stringify(aActivity)).not.toContain("STOP-A-WORKFLOW-OUTER");
+    expect(JSON.stringify(aActivity)).not.toContain(fixture.dirs.workspace);
+    const bActivity = await activity(page, "STOP-ROOT-B");
+    expect(bActivity.agents.map((row) => row.task)).toEqual(["STOP-B-CHILD"]);
+    expect(bActivity.workflows).toEqual([]);
+    expect(
+      aActivity.agents.every((row) => !bActivity.agents.some((other) => other.id === row.id)),
+    ).toBe(true);
+
+    // The real tray renders that read model, not transcript tool calls. Its
+    // first native Escape dismisses only the tray, leaving all gates/work live.
+    const agentTrigger = page.getByRole("button", { name: /^Agents in this tab:/ });
+    const agentTray = page.getByRole("dialog", { name: "Agents in this tab", exact: true });
+    await expect(agentTrigger.locator(".agent-tray__count")).toHaveText("4");
+    await agentTrigger.click();
+    await expect(
+      agentTray.locator(
+        `[data-activity-id="${outer!.workflowId}"] [data-activity-id="${outer!.id}"] [data-activity-id="${grandchild!.id}"]`,
+      ),
+    ).toHaveCount(1);
+    await expect(agentTray).toContainText("STOP-A-CHILD-2");
+    await expect(agentTray).not.toContainText("STOP-B-CHILD");
+    await page.keyboard.press("Escape");
+    await expect(agentTray).toHaveCount(0);
+    await expect(agentTrigger).toBeFocused();
+    expect(traces().some((entry) => entry.phase === "stop-seen")).toBe(false);
+    expect((await snapshot(page, "STOP-ROOT-A"))?.sdk.isStreaming).toBe(true);
+    expect(provider.requests).toHaveLength(8);
     const schedulePath = join(
       fixture.dirs.workspace,
       ".pi/subagent-schedules",
@@ -292,10 +362,25 @@ test("bare Escape stops the current tab's real subagents and workflow, not anoth
       ),
     ).toBe(false);
     expect(fs.readFileSync(schedulePath)).toEqual(schedulesBefore);
+    // A signal receipt is not settlement: public provider hooks are still
+    // held, so terminal manager records must remain visible as unwinding.
+    const stopping = await activity(page, "STOP-ROOT-A");
+    expect(stopping.agentCounts.unwinding).toBeGreaterThan(0);
+    expect(stopping.agentCounts.queued).toBe(0);
+    expect(stopping.agentCounts.finished).toBeGreaterThan(0);
+    await agentTrigger.click();
+    await expect(agentTray.locator('[data-activity-state="unwinding"]').first()).toBeVisible();
+    const stopRequests = traces().filter((entry) => entry.phase === "stop-seen").length;
+    await page.keyboard.press("Escape");
+    await expect(agentTray).toHaveCount(0);
+    expect(traces().filter((entry) => entry.phase === "stop-seen")).toHaveLength(stopRequests);
     for (const label of ["STOP-A-CHILD-1", "STOP-A-CHILD-2", "STOP-A-GRANDCHILD"]) release(label);
     provider.releaseGate("A-parent");
     for (const target of [aChild, aOuter, aGrandchild]) await waitSettled(target);
     await expect.poll(async () => (await snapshot(page, "STOP-ROOT-A"))?.sdk.isIdle).toBe(true);
+    await expect
+      .poll(async () => (await activity(page, "STOP-ROOT-A")).agentCounts)
+      .toEqual({ running: 0, starting: 0, queued: 0, unwinding: 0, finished: 4 });
     expect(provider.requests).toHaveLength(8);
     expect(JSON.stringify(parseSessionEntries(aRoot.sessionFile))).not.toContain(
       "MUST-NOT-COMPLETE-A",
@@ -322,6 +407,14 @@ test("bare Escape stops the current tab's real subagents and workflow, not anoth
     await send(input, "/tab-stop-fixture-idle");
     const idleChild = await waitEntered("STOP-B-IDLE");
     await expect.poll(async () => (await snapshot(page, "STOP-ROOT-B"))?.sdk.isIdle).toBe(true);
+    await expect(agentTrigger.locator(".agent-tray__count")).toHaveText("1");
+    const idleActivity = await activity(page, "STOP-ROOT-B");
+    expect(
+      idleActivity.agents.some((row) => row.task === "STOP-B-IDLE" && row.state === "running"),
+    ).toBe(true);
+    expect(
+      idleActivity.agents.every((row) => !aActivity.agents.some((other) => other.id === row.id)),
+    ).toBe(true);
     await input.focus();
     await page.keyboard.press("Escape");
     await expect
@@ -345,6 +438,18 @@ test("bare Escape stops the current tab's real subagents and workflow, not anoth
     const fresh = await waitEntered("STOP-A-FRESH");
     await provider.waitForRequestCount(11);
     await expect(page.getByText("FRESH A PARENT OK", { exact: true })).toBeVisible();
+    const freshActivity = await activity(page, "STOP-ROOT-A");
+    expect(freshActivity.agentCounts).toEqual({
+      running: 1,
+      starting: 0,
+      queued: 0,
+      unwinding: 0,
+      finished: 4,
+    });
+    expect(
+      freshActivity.agents.some((row) => row.task === "STOP-A-FRESH" && row.state === "running"),
+    ).toBe(true);
+    await expect(agentTrigger.locator(".agent-tray__count")).toHaveText("1");
     release("STOP-A-FRESH");
     await waitSettled(fresh);
     expect(JSON.stringify(parseSessionEntries(fresh.sessionFile))).toContain("FRESH A CHILD OK");
@@ -358,7 +463,7 @@ test("bare Escape stops the current tab's real subagents and workflow, not anoth
     throw new Error(
       `${String(error)}\n${await fixture.diagnostics(launch?.window)}\nElectron output:\n${launch?.output.join("") ?? "<none>"}\nFixture trace:\n${JSON.stringify(traces())}\nProvider requests:\n${JSON.stringify(
         provider.requests.map((request, index) => {
-          const body = request.body as {
+          const body = request.parsedBody as {
             model?: string;
             messages?: Array<{ role: string; content: unknown }>;
             tools?: Array<{ function?: { name?: string } }>;

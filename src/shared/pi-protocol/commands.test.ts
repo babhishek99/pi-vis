@@ -27,6 +27,7 @@ const COMMAND_TYPES = [
   "get_commands",
   "get_state",
   "get_session_stats",
+  "get_subagent_activity",
   "get_messages",
   "get_fork_messages",
   "get_last_assistant_text",

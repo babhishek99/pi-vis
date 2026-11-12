@@ -14,6 +14,11 @@ extensions.
   between them, and keep pins ordered within each section. Double-click a saved
   session to rename it inline. Generated sub-agent sessions are hidden by default;
   show them from Settings when needed.
+- **Active-tab agent tray.** Inspect counts, authored task summaries, workflow
+  phases and real nested relationships from a compatible protocol-4 subagent
+  extension. Queued, starting, running, unwinding and finished stay distinct;
+  unavailable support is unknown, not zero. The tray is read-only, and its first
+  Escape dismisses it without stopping work.
 - **Built-in diff viewer.** See exactly what an agent changed in a
   syntax-highlighted unified or split diff, with branch-relative comparisons. A
   live changed-files badge updates as the agent edits.

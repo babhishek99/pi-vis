@@ -4,6 +4,7 @@ import { ExtensionUiRequestSchema } from "./extension-ui.js";
 import { MarkdownTransformBatchSchema } from "./markdown-transform.js";
 import { PanelEventSchema } from "./panel-events.js";
 import { PiRpcResponseSchema, SessionTreeEntrySchema } from "./responses.js";
+import { SubagentActivityResultSchema } from "./subagent-activity.js";
 import { SubagentStopReceiptSchema } from "./subagent-stop.js";
 import { ThinkingLevelSchema } from "./thinking.js";
 
@@ -575,6 +576,7 @@ export const SessionQuerySchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("get_commands") }).strict(),
   z.object({ type: z.literal("get_state") }).strict(),
   z.object({ type: z.literal("get_session_stats") }).strict(),
+  z.object({ type: z.literal("get_subagent_activity") }).strict(),
   z.object({ type: z.literal("get_messages") }).strict(),
   z.object({ type: z.literal("get_fork_messages") }).strict(),
   z.object({ type: z.literal("get_last_assistant_text") }).strict(),
@@ -623,6 +625,7 @@ export const SessionQueryTypeSchema = z.enum([
   "get_commands",
   "get_state",
   "get_session_stats",
+  "get_subagent_activity",
   "get_messages",
   "get_fork_messages",
   "get_last_assistant_text",
@@ -652,6 +655,7 @@ export const SESSION_QUERY_POLICY = {
   get_commands: { retry: "same_owner" },
   get_state: { retry: "same_owner" },
   get_session_stats: { retry: "same_owner" },
+  get_subagent_activity: { retry: "same_owner" },
   get_messages: { retry: "same_owner" },
   get_fork_messages: { retry: "same_owner" },
   get_last_assistant_text: { retry: "same_owner" },
@@ -711,6 +715,17 @@ const SessionQueryOkSchema = z
         code: z.ZodIssueCode.custom,
         path: ["response", "command"],
         message: "query response command must match its query type",
+      });
+    }
+    if (
+      result.queryType === "get_subagent_activity" &&
+      result.response.success &&
+      !SubagentActivityResultSchema.safeParse(result.response.data).success
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["response", "data"],
+        message: "Invalid bounded activity read",
       });
     }
   });

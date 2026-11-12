@@ -106,7 +106,7 @@ export interface RealSdkLaunch {
 export interface RealSdkFixture {
   readonly piBinary: string | undefined;
   readonly dirs: RealSdkDirectories;
-  readonly providerBaseUrl?: string;
+  readonly providerBaseUrl: string | undefined;
   launch: () => Promise<RealSdkLaunch>;
   sessionFiles: () => string[];
   diagnostics: (window?: Page) => Promise<string>;

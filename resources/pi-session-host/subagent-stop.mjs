@@ -63,7 +63,7 @@ export function createSubagentStopClient(events) {
         if (
           ping.reply &&
           (ping.reply.success !== true ||
-            capabilities?.version !== 3 ||
+            capabilities?.version !== 4 ||
             capabilities?.capabilities?.stopAll !== true)
         )
           return { status: "unsupported" };

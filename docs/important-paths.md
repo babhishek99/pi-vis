@@ -6,6 +6,8 @@
 | `resources/pi-session-host/state-authority.mjs` | Direct snapshots, submission admission/custody, escape, queue restoration, and atomic transitions. |
 | `resources/pi-session-host/state-authority.test.mjs` | Fault-injection regression coverage for authority protocol. |
 | `resources/pi-session-host/bridge.mjs` | Public SDK command/event bridge and runtime rebind wiring. |
+| `resources/pi-session-host/subagent-activity.mjs` | Captured-runtime public-EventBus activity client; bounded protocol-4 discovery/read. |
+| `resources/pi-session-host/subagent-activity-limits.mjs` | Shared activity bounds, coherence rules and fail-closed host plain-data copying. |
 | `src/main/diagnostics.ts` | Synchronous rotating diagnostic sink plus main-process console and fatal-error capture. |
 | `src/main/diagnostics.test.ts` | Diagnostic formatting, rotation, file-permission, and failure-isolation coverage. |
 | `src/main/index.ts` | Electron bootstrap and renderer/Electron-child/Crashpad diagnostic wiring. |
@@ -24,6 +26,9 @@
 | `docs/architecture/gateway-spend.md` | Source scope, safety, coverage, privacy and refresh contract. |
 | `src/shared/ipc-contract.ts` | Typed IPC boundary. |
 | `src/shared/pi-protocol/runtime-state.ts` | Snapshot, disposition, transition, escape, and runtime-state schemas. |
+| `src/shared/pi-protocol/subagent-activity.ts` | Strict display-only activity snapshot/result schemas, not semantic state. |
+| `src/renderer/src/components/session-header/AgentTray.tsx` | Read-only active-tab tray; `use-agent-activity.ts` owns local visit/owner leases. |
+| `docs/architecture/agent-activity.md` | Activity read ownership, bounds, provenance, states and Escape/scroll behavior. |
 | `src/renderer/src/stores/sessions-store.ts` | Renderer projection of runtime authority plus presentation state. |
 | `src/renderer/src/lib/commands/` | Composer parsing and command/submission dispatch. |
 | `src/renderer/src/stores/tree-store.ts` | Conversation tree state and host capability handling. |

@@ -51,7 +51,7 @@ function responder(bus, stopAll = vi.fn(() => empty)) {
   bus.on("subagents:rpc:ping", ({ requestId }) => {
     bus.emit(`subagents:rpc:ping:reply:${requestId}`, {
       success: true,
-      data: { version: 3, capabilities: { stopAll: true } },
+      data: { version: 4, capabilities: { stopAll: true, activitySnapshot: 1 } },
     });
   });
   bus.on("subagents:rpc:stop-all", ({ requestId }) => {
@@ -328,7 +328,7 @@ describe("public event-bus stop receipts", () => {
     failing.on("subagents:rpc:ping", ({ requestId }) =>
       failing.emit(`subagents:rpc:ping:reply:${requestId}`, {
         success: true,
-        data: { version: 3, capabilities: { stopAll: true } },
+        data: { version: 4, capabilities: { stopAll: true, activitySnapshot: 1 } },
       }),
     );
     await expect(createSubagentStopClient(failing).stop()).resolves.toEqual({ status: "failed" });

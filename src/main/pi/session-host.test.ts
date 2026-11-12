@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeHostProcess } from "../../../tests/fixtures/fake-host-process.mjs";
+import { activitySnapshot } from "../../shared/pi-protocol/__fixtures__/subagent-activity.js";
 import {
   HostRequestTransportFencedError,
   HostRequestUnavailableError,
@@ -765,6 +766,48 @@ describe("SessionHost", () => {
   });
 
   describe("command transport", () => {
+    it("validates bounded activity data and sanitizes malformed child data", async () => {
+      fake.emitReady("1.4.0");
+      await host.waitForReady();
+      for (const data of [
+        { status: "ready", snapshot: activitySnapshot() },
+        { status: "ready", snapshot: { private: "must not reach renderer" } },
+      ]) {
+        const pending = host.query({ type: "get_subagent_activity" });
+        const sent = [...fake.sent].reverse().find((message) => message.type === "command")!;
+        fake.emitWire({ type: "response", id: sent.id, success: true, data });
+        const result = await pending;
+        expect(result).toMatchObject({
+          command: "get_subagent_activity",
+          success: true,
+          data: "version" in data.snapshot ? data : { status: "failed" },
+        });
+        expect(JSON.stringify(result)).not.toContain("private");
+      }
+      const failure = host.query({ type: "get_subagent_activity" });
+      const sent = [...fake.sent].reverse().find((message) => message.type === "command")!;
+      fake.emitWire({
+        type: "response",
+        id: sent.id,
+        success: false,
+        error: "private extension failure",
+      });
+      await expect(failure).resolves.toMatchObject({ success: true, data: { status: "failed" } });
+    });
+
+    it("bounds an unresponsive activity read at two seconds and does not retry", async () => {
+      vi.useFakeTimers();
+      fake.emitReady("1.4.0");
+      await host.waitForReady();
+      const pending = host.query({ type: "get_subagent_activity" });
+      const rejected = expect(pending).rejects.toThrow(
+        "Host command timeout for get_subagent_activity",
+      );
+      await vi.advanceTimersByTimeAsync(2_000);
+      await rejected;
+      expect(fake.sent.filter((message) => message.type === "command")).toHaveLength(1);
+    });
+
     it("correlates a read-only query to its mapped command without interpreting its data", async () => {
       await fake.emitReady("0.80.0");
       await host.waitForReady();

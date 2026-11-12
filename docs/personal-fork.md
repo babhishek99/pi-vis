@@ -1,7 +1,8 @@
 # Personal fork development
 
 This checkout adds workspace-local sidebar session groups, inline session
-renaming, a default-off **Show sub-agent sessions** preference, and optional
+renaming, a default-off **Show sub-agent sessions** preference, a read-only
+active-tab agent tray, tab-scoped parent/subagent Escape, and optional
 gateway-recorded spending.
 It can run in development or as a separately packaged **Pi-Vis Personal.app**;
 neither path replaces the installed `/Applications/Pi-Vis.app`.
@@ -91,6 +92,25 @@ model calls by default.
 
 See [sidebar semantics](architecture/sidebar-shell-layout.md) for the persisted
 shape, active-child exception, pagination, and focus behavior.
+
+## Inspect this tab's agents
+
+Open **Agents in this tab** beside the title-bar context ring to inspect retained
+agent/workflow names, authored task summaries, phases and actual nested
+relationships. Counts distinguish starting, queued, running and unwinding work;
+a requested cancellation is not settlement. The tray requires a compatible
+`pi-subagents` protocol **4** extension with **`activitySnapshot: 1`**. Missing,
+incompatible, failed or synchronizing support stays unknown (`?`), never a guessed
+zero. This source integration does not install or update that extension.
+
+The card is read-only; it neither starts nor stops agents and leaves existing
+tools/dialogs intact. Its first bare Escape dismisses it without cancelling work.
+With no overlay/editor/drag/terminal key owner, a later Escape signals the active
+tab's parent first, then requests stop-all on that same runtime's bus. Other tabs,
+saved histories and future schedules remain unchanged. See
+[agent activity](architecture/agent-activity.md) for bounds, provenance and tests.
+The browser preview reports activity unavailable unless a test explicitly
+supplies synthetic read fixtures; it never consults your installed extension.
 
 ## Gateway-recorded costs
 
