@@ -1,5 +1,6 @@
+import { type GatewaySpendResult, currentUtcMonth } from "@shared/gateway-spend.js";
 import type { SessionId } from "@shared/ids.js";
-import type { IpcInvokeContract } from "@shared/ipc-contract.js";
+import type { IpcInvokeContract, SessionSummary } from "@shared/ipc-contract.js";
 import type { ExtensionUiRequest } from "@shared/pi-protocol/extension-ui.js";
 import type {
   AgentSessionSnapshot,
@@ -14,6 +15,7 @@ import type {
   SessionQuery,
 } from "@shared/pi-protocol/runtime-state.js";
 import type { SearchId, SearchTargetId, SessionSearchResult } from "@shared/session-search.js";
+import type { SessionGroup } from "@shared/settings.js";
 /**
  * Stubs window.pivis for standalone browser preview (not running in Electron).
  *
@@ -30,6 +32,62 @@ const DEMO_WORKSPACE = "/Users/demo/src/pi-vis";
 const DEMO_MODEL = "deepseek/deepseek-v4-flash";
 const DEMO_NON_REASONING_MODEL = "claude-fable-5";
 
+const spendDemoEnabled = new URLSearchParams(window.location.search).get("spendDemo") === "1";
+
+/** Synthetic examples only. Neither preview handler can contact a billing source. */
+function previewGatewaySpend(scope: GatewaySpendResult["scope"]): GatewaySpendResult {
+  const now = new Date();
+  const session = scope === "direct_session_partial";
+  const trackedSince = new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+  return {
+    state: spendDemoEnabled ? "ready" : "not_configured",
+    scope,
+    source: "Datadog gateway audit logs",
+    period: spendDemoEnabled
+      ? session
+        ? { start: trackedSince, endExclusive: now.toISOString(), timeZone: "UTC" }
+        : currentUtcMonth(now)
+      : null,
+    snapshot: spendDemoEnabled
+      ? {
+          amountUsd: session ? 1.18 : 42.75,
+          pricedRequests: session ? 4 : 128,
+          unpricedRequests: session ? 0 : 3,
+          asOf: now.toISOString(),
+        }
+      : null,
+    trackedSince: spendDemoEnabled && session ? trackedSince : null,
+    stale: false,
+    issue: null,
+    nextRefreshAt: spendDemoEnabled ? new Date(now.getTime() + 60_000).toISOString() : null,
+  };
+}
+
+// Opt-in manual test drive; these are synthetic paths, never filesystem reads.
+const sidebarDemoEnabled = new URLSearchParams(window.location.search).get("sidebarDemo") === "1";
+const sidebarDemoSessions: SessionSummary[] = [
+  { id: "planning", filePath: "/preview/planning.jsonl", name: "Project planning" },
+  {
+    id: "fork",
+    filePath: "/preview/fork.jsonl",
+    name: "Ordinary fork",
+    parentSession: "/preview/planning.jsonl",
+  },
+  {
+    id: "child",
+    filePath: "/preview/child.jsonl",
+    name: "Explore#1234abcd",
+    parentSession: "/preview/planning.jsonl",
+    isSubagent: true,
+  },
+].map((session) => ({
+  ...session,
+  cwd: DEMO_WORKSPACE,
+  preview: "Synthetic preview conversation",
+  mtime: 1,
+  messageCount: 1,
+}));
+
 // Per-session mutable state so the dropdown actually reflects the user's picks
 // in the browser-only preview. Mirrors what the real `pi` binary does in
 // memory between `set_thinking_level` / `get_state` calls.
@@ -41,6 +99,7 @@ let customEntryRendererVersion = 1;
 
 const PREVIEW_HOST_ID = "00000000-0000-4000-8000-000000000001";
 type PreviewRuntime = {
+  sessionName?: string | undefined;
   isStreaming: boolean;
   sessionEpoch: number;
   snapshotSequence: number;
@@ -318,6 +377,8 @@ function runtimeFor(sessionId: SessionId): PreviewRuntime {
   let runtime = previewRuntime.get(sessionId);
   if (!runtime) {
     runtime = {
+      sessionName:
+        sidebarDemoEnabled && sessionId === DEMO_SESSION_ID ? "Demo conversation" : undefined,
       isStreaming: false,
       sessionEpoch: 0,
       snapshotSequence: 0,
@@ -381,6 +442,7 @@ function semanticSnapshot(sessionId: SessionId): SemanticSnapshot {
     operationJournalTruncated: false,
     model: { id: currentModelId, provider: currentModelProvider },
     thinkingLevel: currentThinkingLevel,
+    ...(runtime.sessionName !== undefined ? { sessionName: runtime.sessionName } : {}),
     catalog: { notifications: [], statuses: {}, widgets: {}, capabilityDiagnostics: [] },
   };
 }
@@ -716,7 +778,12 @@ function seedDemoSession(): void {
   const store = useSessionsStore.getState();
   store.addWorkspace(DEMO_WORKSPACE);
   store.setActiveWorkspace(DEMO_WORKSPACE);
-  store.createSession(DEMO_SESSION_ID, DEMO_WORKSPACE);
+  store.createSession(
+    DEMO_SESSION_ID,
+    DEMO_WORKSPACE,
+    sidebarDemoEnabled ? "/preview/demo-conversation.jsonl" : undefined,
+    sidebarDemoEnabled ? "Demo conversation" : undefined,
+  );
   store.setSessionStatus(DEMO_SESSION_ID, "ready");
   store.setActiveSession(DEMO_SESSION_ID);
   emitRuntimeState(DEMO_SESSION_ID, false);
@@ -1095,6 +1162,9 @@ async function handlePreviewRequest(command: Record<string, unknown>): Promise<u
     }
     case "render_tool":
       return response("render_tool", { rendered: false });
+    case "get_subagent_activity":
+      // Preview has no extension runtime. Unknown is not an empty live fleet.
+      return response("get_subagent_activity", { status: "unavailable" });
     case "get_session_stats":
       return response("get_session_stats", {
         sessionId: DEMO_SESSION_ID,
@@ -1532,7 +1602,11 @@ async function settleIntent(envelope: PreviewIntentEnvelope): Promise<void> {
         emitRuntimeState(envelope.sessionId, false, false);
         break;
       case "rename":
-        emitEvent({ type: "session_info_changed", name: intent.name });
+        runtime.sessionName = intent.name;
+        emit("session.events", {
+          sessionId: envelope.sessionId,
+          events: [{ type: "session_info_changed", name: intent.name }],
+        });
         break;
       case "reload":
         await sleep(50);
@@ -1670,6 +1744,8 @@ const settingsState = {
   sessionSearchEnabled: true,
   extensionUpdateCheckEnabled: true,
   pinnedSessions: [] as string[],
+  sessionGroups: [] as SessionGroup[],
+  showSubagentSessions: false,
   archivedSessions: [] as string[],
   worktrees: {},
   sessionWorktrees: {},
@@ -1725,6 +1801,10 @@ const stub = {
           ok: true,
           markdown: "# Preview changelog heading\n\nPreview changelog body.",
         };
+      case "gatewaySpend.month":
+        return previewGatewaySpend("personal_gateway");
+      case "gatewaySpend.session":
+        return previewGatewaySpend("direct_session_partial");
       case "extensionUpdates.status":
         return previewExtensionUpdateStatus;
       case "extensionUpdates.check": {
@@ -1809,7 +1889,10 @@ const stub = {
         return settingsState.workspaceOrder;
       }
       case "workspace.listSessions":
-        return [];
+        return sidebarDemoEnabled &&
+          (req as { workspacePath: string }).workspacePath === DEMO_WORKSPACE
+          ? sidebarDemoSessions.map((session) => ({ ...session }))
+          : [];
       case "sessionSearch.available":
         return true;
       case "sessionSearch.start": {
@@ -1958,17 +2041,26 @@ const stub = {
         ) {
           initialWorkspaceOpenSessionId = sessionId;
         }
+        const demo = sidebarDemoEnabled
+          ? sidebarDemoSessions.find((session) => session.filePath === sessionFile)
+          : undefined;
+        if (demo?.name) runtimeFor(sessionId).sessionName = demo.name;
         return {
           outcome: "opened",
           sessionId,
-          name: null,
-          preview: null,
+          name: demo?.name ?? null,
+          preview: demo?.preview ?? null,
           sessionStatus: "cold",
         };
       }
       case "session.activate": {
         const { sessionId } = req as { sessionId: SessionId };
         setTimeout(() => {
+          // Browser-only conversations have synthetic, never-written file keys
+          // so even newly messaged demo rows can exercise group/pin controls.
+          if (sidebarDemoEnabled) {
+            useSessionsStore.getState().setSessionFile(sessionId, `/preview/${sessionId}.jsonl`);
+          }
           emit("session.statusChanged", { sessionId, status: "ready" });
           emitRuntimeState(sessionId, false);
           if (sessionId === initialWorkspaceOpenSessionId) {

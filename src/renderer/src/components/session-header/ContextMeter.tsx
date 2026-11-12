@@ -1,9 +1,10 @@
 import type { SessionId } from "@shared/ids.js";
 import type React from "react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useEscapeClaim } from "../../hooks/useEscapeClaim.js";
 import { formatTokens } from "../../lib/format.js";
 import { useSessionsStore } from "../../stores/sessions-store.js";
+import { GatewaySessionSpend } from "../gateway-spend/GatewaySessionSpend.js";
 import "./ContextMeter.css";
 
 /**
@@ -25,8 +26,67 @@ export function ContextMeter({ sessionId }: { sessionId: SessionId }): React.Rea
   const stats = useSessionsStore((s) => s.sessions.get(sessionId)?.stats);
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const detailsId = useId();
 
   useEscapeClaim(open);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const fit = (): void => {
+      const wrap = wrapRef.current;
+      const card = wrap?.querySelector<HTMLElement>(".context-dropdown");
+      if (!wrap || !card) return;
+      // Compact mode puts the ring inside the main card's clipping boundary.
+      // Fit its actual anchor/clip, not a guessed title-bar or sidebar width.
+      const anchor = wrap.getBoundingClientRect();
+      const clip = wrap.closest(".app__main")?.getBoundingClientRect();
+      const left = Math.max(0, clip?.left ?? 0);
+      const right = Math.min(window.innerWidth, clip?.right ?? window.innerWidth);
+      const available = Math.max(0, right - left);
+      card.style.maxWidth = `calc(${available}px - var(--space-4))`;
+      card.style.minWidth = `min(22rem, calc(${available}px - var(--space-4)))`;
+      const style = getComputedStyle(card);
+      const width = card.offsetWidth;
+      const inset = Math.max(
+        0,
+        Math.min(Number.parseFloat(style.paddingLeft), (available - width) / 2),
+      );
+      const cardRight = Math.max(left + inset + width, Math.min(anchor.right, right - inset));
+      card.style.right = `${anchor.right - cardRight}px`;
+      const top = anchor.top + Number.parseFloat(style.top);
+      if (!Number.isFinite(top)) return;
+      const bottom = Math.min(window.innerHeight, clip?.bottom ?? window.innerHeight);
+      card.style.maxHeight = `calc(${Math.max(0, bottom - top)}px - var(--space-2))`;
+    };
+    const wrap = wrapRef.current;
+    const controls = wrap?.parentElement;
+    const clip = wrap?.closest(".app__main");
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
+    const observeLayout = (): void => {
+      observer?.disconnect();
+      if (clip) observer?.observe(clip);
+      if (controls) {
+        observer?.observe(controls);
+        // Font loading or a picker label can move the ring within a wrapping
+        // row without resizing the pane (or the ring itself).
+        for (const child of controls.children) observer?.observe(child);
+      }
+      fit();
+    };
+    observeLayout();
+    const mutations =
+      controls && typeof MutationObserver !== "undefined"
+        ? new MutationObserver(observeLayout)
+        : null;
+    if (controls) mutations?.observe(controls, { childList: true });
+    window.addEventListener("resize", fit);
+    return () => {
+      observer?.disconnect();
+      mutations?.disconnect();
+      window.removeEventListener("resize", fit);
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -54,6 +114,7 @@ export function ContextMeter({ sessionId }: { sessionId: SessionId }): React.Rea
       e.preventDefault();
       e.stopImmediatePropagation();
       setOpen(false);
+      triggerRef.current?.focus();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -101,12 +162,14 @@ export function ContextMeter({ sessionId }: { sessionId: SessionId }): React.Rea
   return (
     <div className="context-meter-wrap" ref={wrapRef}>
       <button
+        ref={triggerRef}
         type="button"
         className={`context-ring ${tone} ${open ? "context-ring--open" : ""}`}
         onClick={() => setOpen((v) => !v)}
         title={pct !== null ? `${pct}% context used` : "Context usage"}
         aria-label={pct !== null ? `${pct}% context used` : "Context usage"}
         aria-expanded={open}
+        aria-controls={detailsId}
       >
         <svg
           width={size}
@@ -138,7 +201,12 @@ export function ContextMeter({ sessionId }: { sessionId: SessionId }): React.Rea
       </button>
 
       {open && (
-        <div className="context-dropdown" role="dialog" aria-label="Context usage details">
+        <div
+          id={detailsId}
+          className="context-dropdown"
+          role="dialog"
+          aria-label="Context usage details"
+        >
           {/* Context headline + linear meter (the ring, unrolled). */}
           <div className="context-dropdown__head">
             <span className="context-dropdown__label">Context</span>
@@ -177,6 +245,7 @@ export function ContextMeter({ sessionId }: { sessionId: SessionId }): React.Rea
               ))}
             </dl>
           )}
+          <GatewaySessionSpend sessionId={sessionId} />
         </div>
       )}
     </div>

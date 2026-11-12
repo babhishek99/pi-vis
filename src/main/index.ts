@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import {
   BrowserWindow,
@@ -9,6 +10,7 @@ import {
   session,
   shell,
 } from "electron";
+import { resolveAppIdentity } from "./app-identity.js";
 import { installBeforeQuitFence } from "./app-quit.js";
 import {
   appendDiagnostic,
@@ -55,7 +57,12 @@ function boundsOnScreen(b: { x: number; y: number; width: number; height: number
   });
 }
 
-app.setName("Pi-Vis");
+const appIdentity = resolveAppIdentity(
+  app.getName(),
+  app.getPath("appData"),
+  process.env["PIVIS_SETTINGS_DIR"],
+);
+app.setName(appIdentity.name);
 
 const hideWindowForTests = process.env["PIVIS_TEST_HIDE_WINDOW"] === "1";
 
@@ -81,14 +88,14 @@ if (process.env["PIVIS_TEST_REMOTE_DEBUGGING_PORT"]) {
   );
 }
 
-// Test isolation: PIVIS_SETTINGS_DIR (set by the e2e suites) redirects the
-// whole userData dir, not just settings.json. The single-instance lock and
-// Chromium's ProcessSingleton are both keyed on userData, so without this a
-// test instance collides with a running production Pi-Vis (or with parallel
-// test workers) and quits before creating a window. Must run before
-// requestSingleInstanceLock().
-if (process.env["PIVIS_SETTINGS_DIR"]) {
-  app.setPath("userData", process.env["PIVIS_SETTINGS_DIR"]);
+// Personal builds choose their own default even when opened from Finder.
+// PIVIS_SETTINGS_DIR remains the explicit override for development and tests.
+// Redirect the whole userData dir before diagnostics and both Electron's and
+// Chromium's instance locks, never just settings.json. Do not fall back to the
+// installed app's profile if the chosen directory cannot be created.
+if (appIdentity.userDataDirectory) {
+  fs.mkdirSync(appIdentity.userDataDirectory, { recursive: true, mode: 0o700 });
+  app.setPath("userData", appIdentity.userDataDirectory);
 }
 
 const diagnosticsFile = path.join(app.getPath("userData"), "diagnostics.log");
@@ -105,7 +112,11 @@ try {
   // Native Electron/Chromium crashes cannot provide a JavaScript stack. Keep
   // local Crashpad dumps alongside the text diagnostics instead of uploading
   // them, so hard renderer/GPU/main crashes still leave inspectable evidence.
-  crashReporter.start({ companyName: "Pi-Vis", productName: "Pi-Vis", uploadToServer: false });
+  crashReporter.start({
+    companyName: "Pi-Vis",
+    productName: appIdentity.name,
+    uploadToServer: false,
+  });
   appendDiagnostic("main", "crash-reporter-started", undefined, {
     crashDumps: app.getPath("crashDumps"),
   });

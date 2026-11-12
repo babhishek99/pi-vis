@@ -531,7 +531,8 @@ test.describe("Slash commands", () => {
         );
       });
 
-      await shellARow.click();
+      // Select the label, not one of the row's hover-revealed action buttons.
+      await shellARow.locator(".sidebar__session-name").click();
       await expect(terminal).toBeVisible({ timeout: 10_000 });
       await expect(window.locator(".composer__textarea")).toHaveCount(0);
       await expect(terminal).toHaveAttribute("aria-busy", "false", { timeout: 15_000 });
@@ -595,7 +596,7 @@ test.describe("Slash commands", () => {
 
       const shellBRow = window.locator(".sidebar__session").filter({ hasText: "Shell B" });
       await expect(shellBRow).toBeVisible();
-      await shellBRow.click();
+      await shellBRow.locator(".sidebar__session-name").click();
       await expect(terminal).toHaveCount(0);
       await expect(window.locator(".session-header__name-btn")).toContainText("Shell B");
       await expect(composer).toBeFocused();
@@ -609,7 +610,7 @@ test.describe("Slash commands", () => {
       await expect(composer).toBeFocused();
       await expect(window.locator(".composer__attachment-item--file")).toHaveCount(1);
 
-      await shellARow.click();
+      await shellARow.locator(".sidebar__session-name").click();
       await expect(
         window.locator(".shell-turn").filter({ hasText: "test-background-shell" }),
       ).toContainText("background shell complete");
@@ -867,13 +868,26 @@ test.describe("Slash commands", () => {
     await textarea.press("Enter");
     const dialog = window.locator(".ext-dialog");
     await expect(dialog).toBeVisible({ timeout: 5_000 });
+    const attention = window.locator(".sidebar__session--active .status-dot--attention");
+    await expect(attention).toBeVisible();
+    const warningColor = await window.evaluate(() => {
+      const probe = document.createElement("span");
+      probe.style.backgroundColor = "var(--warning)";
+      document.body.append(probe);
+      const color = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return color;
+    });
+    await expect(attention).toHaveCSS("background-color", warningColor);
+    await expect(window.locator(".sidebar__session--active .status-dot--streaming")).toHaveCount(0);
     // Click the second option ("Deny"). The keyboard nav is exercised
     // by the same dialog's onKeyDown (real users get it for free);
     // a click keeps the test stable across electron-flavoured focus
     // edge cases.
     await dialog.locator(".ext-dialog__option").nth(1).click();
-    // The dialog closes; the agent echoes the chosen answer.
+    // The dialog closes; attention clears and the agent echoes the chosen answer.
     await expect(dialog).toBeHidden({ timeout: 10_000 });
+    await expect(attention).toHaveCount(0);
     await expect(window.locator("body")).toContainText("ask-user-question chose:", {
       timeout: 10_000,
     });

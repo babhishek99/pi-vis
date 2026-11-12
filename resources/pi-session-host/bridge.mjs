@@ -10,6 +10,7 @@ import {
 import { RADIUS_PROVIDER_ID, configureRadiusMcp, inspectRadiusMcpConfig } from "./radius-mcp.mjs";
 import { shareSessionViaRadius } from "./session-share.mjs";
 import { SHELL_ADMISSION_CANCELLED_CODE, createStateAuthority } from "./state-authority.mjs";
+import { createTabEscapeHandler } from "./subagent-stop.mjs";
 import { createToolRenderer } from "./tool-renderer.mjs";
 
 function exitSignalName(value) {
@@ -318,6 +319,8 @@ export function setupCommandBridge({
   requestTransitionPermit = async () => ({ allowed: true, reason: "test/local permit" }),
   initialBinding = false,
   initialPresentedSessionFile,
+  getSubagentStopClient = () => undefined,
+  getSubagentActivityClient = () => undefined,
   lifecycleUiTracker = { track: (promise) => promise },
   uiState = {
     catalogSnapshot: () => ({}),
@@ -1657,9 +1660,11 @@ export function setupCommandBridge({
     return authority.submit(msg.submission);
   }
 
-  async function handleEscape(requestId) {
-    return authority.requestEscape(requestId);
-  }
+  const handleEscape = createTabEscapeHandler({
+    authority,
+    getSession: () => _session,
+    getStopClient: getSubagentStopClient,
+  });
 
   async function handleReload(alreadySerialized = false, reloadEditorCommand = undefined) {
     // Repeat child-owned admission immediately before transition creation. The
@@ -2427,7 +2432,36 @@ export function setupCommandBridge({
         success: false,
         error: "Session replacement is in progress",
       });
-      authority.publishSnapshot();
+      if (command.type !== "get_subagent_activity") authority.publishSnapshot();
+      return;
+    }
+    if (command.type === "get_subagent_activity") {
+      // Pure display read: no semantic admission, activity counters or snapshot
+      // publication. Capture before any extension callback or await.
+      const target = _session;
+      const epoch = authority.sessionEpoch;
+      const current = () =>
+        _session === target &&
+        authority.sessionEpoch === epoch &&
+        !authority.isTransitioning &&
+        !authority.isClosing;
+      let data;
+      try {
+        const client = getSubagentActivityClient(target);
+        data = current() && client ? await client.read() : { status: "unavailable" };
+      } catch {
+        data = { status: "failed" };
+      }
+      if (!current()) {
+        send({
+          type: "response",
+          id,
+          success: false,
+          error: "Session changed during activity read",
+        });
+      } else {
+        send({ type: "response", id, success: true, data });
+      }
       return;
     }
     activeCommands++;

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { defaultSettings } from "@shared/settings.js";
-import type { AppSettings } from "@shared/settings.js";
+import type { AppSettings, SessionGroup } from "@shared/settings.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { applyFonts, useSettingsStore } from "./settings-store.js";
 
@@ -121,6 +121,77 @@ describe("settings font application", () => {
     expect(persisted.fonts.transcriptHeader.family).toBe("Charter");
     expect(useSettingsStore.getState().settings.fonts).toEqual(persisted.fonts);
   });
+
+  it.each([false, true])(
+    "rebases queued group mutations on confirmed state across interleaved settings writes (first succeeds: %s)",
+    async (firstSucceeds) => {
+      type PendingWrite = {
+        updates: Partial<AppSettings>;
+        resolve: (settings: AppSettings) => void;
+        reject: (error: Error) => void;
+      };
+      const pending: PendingWrite[] = [];
+      let persisted: AppSettings = {
+        ...structuredClone(defaultSettings),
+        sessionGroups: [
+          { id: "work", workspacePath: "/repo", name: "Work", sessionFiles: [], collapsed: false },
+        ],
+      };
+      const invoke = vi.fn(async (channel: string, updates?: Partial<AppSettings>) => {
+        if (channel === "themes.listUser") return [];
+        if (channel === "settings.get") return structuredClone(persisted);
+        if (channel === "settings.set") {
+          if (!updates) throw new Error("Missing settings patch");
+          return new Promise<AppSettings>((resolve, reject) =>
+            pending.push({ updates, resolve, reject }),
+          );
+        }
+        throw new Error(`Unexpected channel: ${channel}`);
+      });
+      Object.defineProperty(window, "pivis", { configurable: true, value: { invoke } });
+      await useSettingsStore.getState().load();
+      const append =
+        (file: string) =>
+        (groups: SessionGroup[]): SessionGroup[] =>
+          groups.map((group) => ({ ...group, sessionFiles: [...group.sessionFiles, file] }));
+      const first = useSettingsStore.getState().updateSessionGroups(append("one"));
+      const outcome = first.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      const width = useSettingsStore.getState().update({ sidebarWidth: 300 });
+      const secondMutation = vi.fn(append("two"));
+      const second = useSettingsStore.getState().updateSessionGroups(secondMutation);
+      expect(useSettingsStore.getState().settings.sessionGroups[0]?.sessionFiles).toEqual([
+        "one",
+        "two",
+      ]);
+      expect(secondMutation).toHaveBeenCalledTimes(1);
+      await vi.waitFor(() => expect(pending).toHaveLength(1));
+      const failure = new Error("first group save failed");
+      if (firstSucceeds) {
+        persisted = { ...persisted, ...pending[0]!.updates };
+        pending[0]!.resolve(structuredClone(persisted));
+      } else pending[0]!.reject(failure);
+      expect(await outcome).toBe(firstSucceeds ? null : failure);
+      await vi.waitFor(() => expect(pending).toHaveLength(2));
+      expect(pending[1]!.updates).toEqual({ sidebarWidth: 300 });
+      persisted = { ...persisted, ...pending[1]!.updates };
+      pending[1]!.resolve(structuredClone(persisted));
+      await vi.waitFor(() => expect(pending).toHaveLength(3));
+      const expectedFiles = firstSucceeds ? ["one", "two"] : ["two"];
+      expect(pending[2]!.updates.sessionGroups?.[0]?.sessionFiles).toEqual(expectedFiles);
+      expect(secondMutation).toHaveBeenCalledTimes(2);
+      persisted = { ...persisted, ...pending[2]!.updates };
+      pending[2]!.resolve(structuredClone(persisted));
+      await Promise.all([first.catch(() => undefined), width, second]);
+      expect(useSettingsStore.getState().settings.sessionGroups[0]?.sessionFiles).toEqual(
+        expectedFiles,
+      );
+      expect(useSettingsStore.getState().settings.sidebarWidth).toBe(300);
+      expect(useSettingsStore.getState().settings).toEqual(persisted);
+    },
+  );
 
   it("restores the last persisted reading fonts when the latest write fails", async () => {
     const persisted = structuredClone(defaultSettings);

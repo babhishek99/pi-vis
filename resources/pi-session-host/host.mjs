@@ -47,6 +47,7 @@ import {
 } from "./bootstrap.mjs";
 import { assertHostCapabilities, setupCommandBridge } from "./bridge.mjs";
 import { buildEditorTheme } from "./editor-theme.mjs";
+import { withGatewaySpendAttribution } from "./gateway-spend.mjs";
 import { createIpcSendQueue } from "./ipc-send-queue.mjs";
 import { createPanelReconstruction } from "./panel-reconstruction.mjs";
 import { migrateLegacyAzureCredential } from "./pi-compatibility.mjs";
@@ -56,6 +57,8 @@ import {
   canonicalizeConfinedSessionStartEvent,
 } from "./session-lineage.mjs";
 import { createShellPtyController } from "./shell-pty.mjs";
+import { createSubagentActivityClient } from "./subagent-activity.mjs";
+import { createSubagentStopClient } from "./subagent-stop.mjs";
 import { applyTuiRuntimeSettings, createDialogResolver, createUIContext } from "./ui-context.mjs";
 import { createUiRequestSender } from "./ui-request-router.mjs";
 
@@ -623,6 +626,8 @@ async function handleInit(msg) {
       runtimeResumeState,
     );
 
+    const subagentStopClients = new WeakMap();
+    const subagentActivityClients = new WeakMap();
     const createRuntime = async ({
       cwd: sc,
       agentDir: ad,
@@ -658,6 +663,9 @@ async function handleInit(msg) {
           "Could not migrate the Azure account; check the global auth.json configuration",
         );
       }
+      const eventBus = pi.createEventBus();
+      const subagentStopClient = createSubagentStopClient(eventBus);
+      const subagentActivityClient = createSubagentActivityClient(eventBus);
       const services = await pi.createAgentSessionServices({
         cwd: sc,
         agentDir: ad,
@@ -665,10 +673,19 @@ async function handleInit(msg) {
         // this factory anew and therefore receives a fresh timeout signal.
         modelRuntimeSignal: AbortSignal.timeout(15_000),
         resourceLoaderOptions: {
+          eventBus,
           extensionFactories: builtinExtensionFactories,
         },
         resourceLoaderReloadOptions: { resolveProjectTrust: resolveTrust },
       });
+      // Services have finished registering managed providers. Decorate only
+      // the public runtime shared by this manager's session and returned services;
+      // endpoint validation happens later at the actual provider fetch boundary.
+      services.modelRuntime = withGatewaySpendAttribution(
+        services.modelRuntime,
+        sm,
+        process.env.PIVIS_GATEWAY_SPEND,
+      );
       // Terminal image capability overrides are settings-scoped in Pi 0.84.4+
       // and pi-tui exposes a public process-global setter. Apply them on every
       // factory invocation so session replacement/rebind cannot retain stale
@@ -690,6 +707,8 @@ async function handleInit(msg) {
         sessionStartEvent: presentedSessionStartEvent,
         ...sessionOptions,
       });
+      subagentStopClients.set(result.session, subagentStopClient);
+      subagentActivityClients.set(result.session, subagentActivityClient);
       return {
         ...result,
         services,
@@ -814,6 +833,8 @@ async function handleInit(msg) {
           })),
       },
       initialBinding: true,
+      getSubagentStopClient: (target) => subagentStopClients.get(target),
+      getSubagentActivityClient: (target) => subagentActivityClients.get(target),
       lifecycleUiTracker,
       uiState: {
         ...uiState,
@@ -961,7 +982,7 @@ process.on("message", async (msg) => {
       }
 
       case "escape": {
-        const result = await handleEscape?.(msg.requestId);
+        const result = await handleEscape?.(msg);
         send({ type: "response", id: msg.id, success: true, data: result });
         break;
       }

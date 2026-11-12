@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { currentUtcMonth } from "@shared/gateway-spend.js";
 import type { SessionId } from "@shared/ids.js";
 import { defaultSettings } from "@shared/settings.js";
 import type React from "react";
@@ -65,6 +66,46 @@ describe("Sidebar boot workspace restore", () => {
     useSettingsStore.setState({ settings: defaultSettings, loaded: false });
     (globalThis.window as unknown as { pivis?: unknown }).pivis = undefined;
     document.body.innerHTML = "";
+  });
+
+  it("places the monthly gateway widget immediately above the footer", async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === "workspace.list") return [];
+      if (channel === "gatewaySpend.month") {
+        const period = currentUtcMonth(new Date());
+        return {
+          state: "ready",
+          scope: "personal_gateway",
+          source: "Datadog gateway audit logs",
+          period,
+          snapshot: {
+            amountUsd: 42.75,
+            pricedRequests: 12,
+            unpricedRequests: 0,
+            asOf: period.endExclusive,
+          },
+          trackedSince: null,
+          stale: false,
+          issue: null,
+          nextRefreshAt: null,
+        };
+      }
+      throw new Error(`Unexpected IPC channel ${channel}`);
+    });
+    (globalThis.window as unknown as { pivis?: unknown }).pivis = { invoke };
+    const { container, unmount } = mount(<Sidebar onOpenSettings={() => {}} />);
+    await flushEffects();
+    const widget = container.querySelector(".gateway-spend-month");
+    expect(widget).not.toBeNull();
+    expect(widget?.textContent).toContain("$42.75 USD");
+    expect(widget?.textContent).toContain("MTD");
+    expect(widget?.querySelector("button")?.getAttribute("aria-label")).toBe(
+      "Current month gateway spend",
+    );
+    expect(container.querySelector(".sidebar__footer")?.previousElementSibling).toBe(widget);
+    expect(invoke).toHaveBeenCalledWith("gatewaySpend.month", {});
+    expect(invoke.mock.calls.some(([channel]) => channel === "gatewaySpend.session")).toBe(false);
+    unmount();
   });
 
   it("hides saved-session search actions when unavailable for this launch", async () => {

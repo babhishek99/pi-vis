@@ -134,6 +134,24 @@ export function IconFile(props: IconProps): React.ReactElement {
   );
 }
 
+/** Folder — sidebar session organization. */
+export function IconFolder(props: IconProps): React.ReactElement {
+  return (
+    <Icon {...props}>
+      <path d="M1.5 3.25V2.5h3l1 1h5v6h-9z" />
+    </Icon>
+  );
+}
+
+export function IconFolderPlus(props: IconProps): React.ReactElement {
+  return (
+    <Icon {...props}>
+      <path d="M1.5 3.25V2.5h3l1 1h5v6h-9z" />
+      <path d="M6 5v3M4.5 6.5h3" />
+    </Icon>
+  );
+}
+
 /** Comment bubble — code-review notes. */
 export function IconComment(props: IconProps): React.ReactElement {
   return (
@@ -149,6 +167,16 @@ export function IconBell(props: IconProps): React.ReactElement {
     <Icon {...props}>
       <path d="M3.25 5.4c0-1.65 1.05-2.9 2.75-2.9s2.75 1.25 2.75 2.9v1.5l0.85 1.25H2.4l0.85-1.25z" />
       <path d="M5 9.1c0.2 0.55 0.55 0.85 1 0.85s0.8-0.3 1-0.85" />
+    </Icon>
+  );
+}
+
+/** Agents — a small fleet, for runtime activity disclosure. */
+export function IconAgents(props: IconProps): React.ReactElement {
+  return (
+    <Icon {...props}>
+      <circle cx="4.5" cy="3.5" r="1.75" />
+      <path d="M1.5 10V8.5a3 3 0 0 1 6 0V10M8 2a1.75 1.75 0 0 1 0 3.5M9 6.5a2.5 2.5 0 0 1 1.5 2.25V10" />
     </Icon>
   );
 }

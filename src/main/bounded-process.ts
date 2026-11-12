@@ -9,7 +9,8 @@ export type BoundedProcessFailureKind =
   | "output-limit"
   | "nonzero-exit"
   | "not-found"
-  | "spawn-failed";
+  | "spawn-failed"
+  | "cancelled";
 
 export class BoundedProcessError extends Error {
   constructor(
@@ -40,6 +41,7 @@ export interface BoundedCaptureOptions {
   maxBufferBytes?: number | undefined;
   cwd?: string | undefined;
   env?: NodeJS.ProcessEnv | undefined;
+  signal?: AbortSignal | undefined;
 }
 
 export interface BoundedCaptureResult {
@@ -137,6 +139,10 @@ export function captureProcessOutput(
     return Promise.reject(new TypeError("maxBufferBytes must be a positive safe integer"));
   }
 
+  if (options.signal?.aborted) {
+    return Promise.reject(new BoundedProcessError("cancelled", "Process capture cancelled"));
+  }
+
   return new Promise((resolve, reject) => {
     let child: ChildProcess;
     try {
@@ -156,6 +162,9 @@ export function captureProcessOutput(
     const stderrChunks: Buffer[] = [];
     let capturedBytes = 0;
     let settled = false;
+    let cleanupPending = false;
+    let cleanupImmediate: ReturnType<typeof setImmediate> | undefined;
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
     const deadlineTimer = setTimeout(
       () =>
         terminate(
@@ -164,31 +173,68 @@ export function captureProcessOutput(
       options.timeoutMs,
     );
 
+    const releaseCleanup = (): void => {
+      cleanupPending = false;
+      if (cleanupImmediate !== undefined) clearImmediate(cleanupImmediate);
+      if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
+      cleanupImmediate = undefined;
+      forceKillTimer = undefined;
+      options.signal?.removeEventListener("abort", onAbort);
+    };
+
+    const forceKill = (): void => {
+      if (!cleanupPending) return;
+      releaseCleanup();
+      signalProcessTree(child, "SIGKILL");
+    };
+
     const finish = (result: BoundedCaptureResult | Error): void => {
       if (settled) return;
       settled = true;
       clearTimeout(deadlineTimer);
+      // A rejected capture can still own a live group, even after its leader
+      // closes. Keep cancellation until its pending forced cleanup is issued.
+      if (!cleanupPending) releaseCleanup();
       if (result instanceof Error) reject(result);
       else resolve(result);
     };
 
-    const terminate = (error: Error): void => {
-      if (settled) return;
+    const terminate = (error: Error, immediateKill = false): void => {
+      if (settled) {
+        if (immediateKill) forceKill();
+        return;
+      }
+      cleanupPending = true;
       // Caller settlement is the hard boundary. Close our pipe readers and
       // reject before tree cleanup, because even starting an OS cleanup helper
       // can block. Signaling begins on a later event-loop turn.
       child.stdout?.destroy();
       child.stderr?.destroy();
       finish(error);
-      setImmediate(() => {
+      if (immediateKill) {
+        // Explicit cancellation is also used during app quit. Signal before
+        // its promise continuation can terminate the main event loop; a
+        // deferred cleanup timer would otherwise strand the read-only child.
+        forceKill();
+        return;
+      }
+      cleanupImmediate = setImmediate(() => {
+        cleanupImmediate = undefined;
         signalProcessTree(child, "SIGTERM");
-        const forceKillTimer = setTimeout(
-          () => signalProcessTree(child, "SIGKILL"),
-          FORCE_KILL_GRACE_MS,
-        );
-        forceKillTimer.unref?.();
+        if (cleanupPending) {
+          forceKillTimer = setTimeout(forceKill, FORCE_KILL_GRACE_MS);
+          forceKillTimer.unref?.();
+        }
       });
     };
+
+    const onAbort = (): void => {
+      terminate(new BoundedProcessError("cancelled", "Process capture cancelled"), true);
+    };
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    // A synchronous spawn wrapper may have aborted between the initial check
+    // and listener registration. It still owns the same cleanup path.
+    if (options.signal?.aborted) onAbort();
 
     const capture = (chunks: Buffer[], chunk: Buffer | string): void => {
       if (settled) return;

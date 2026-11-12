@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadSettings, saveSettings } from "../settings-store.js";
 import {
   extractSessionMeta,
+  extractSessionMetaAsync,
   listSessionsForWorkspace,
   resolveValidatedWorktreeForFile,
   resolveWorktreeForFile,
@@ -197,7 +198,7 @@ describe("listSessionsForWorkspace", () => {
     expect(summaries).toHaveLength(0);
   });
 
-  it("extractSessionMeta ignores empty-string session_info names", () => {
+  it("extractSessionMeta honors an empty-string session_info name as a clear", () => {
     const cwd = path.join(root, "workspace-A");
     const filePath = writeSession("workspace-A", "session1.jsonl", [
       { type: "session", version: 3, id: "abc", timestamp: "2024-01-01T00:00:00Z", cwd },
@@ -213,7 +214,7 @@ describe("listSessionsForWorkspace", () => {
     ]);
 
     const meta = extractSessionMeta(filePath);
-    expect(meta.name).toBe("First");
+    expect(meta.name).toBe("");
     expect(meta.preview).toBe("hi");
     expect(meta.messageCount).toBe(1);
   });
@@ -395,6 +396,235 @@ describe("listSessionsForWorkspace", () => {
     // A (newer user activity) must rank above B (newer mtime only).
     expect(summaries[0]?.id).toBe("A");
     expect(summaries[1]?.id).toBe("B");
+  });
+});
+
+describe("persisted subagent sidebar metadata", () => {
+  function writeNamedSession(fileName: string, names: string[], parentSession?: unknown): string {
+    const cwd = path.join(root, "workspace-A");
+    const id = path.basename(fileName, ".jsonl");
+    return writeSession("workspace-A", fileName, [
+      {
+        type: "session",
+        version: 3,
+        id,
+        timestamp: "2024-01-01T00:00:00Z",
+        cwd,
+        ...(parentSession !== undefined ? { parentSession } : {}),
+      },
+      userEntry("e1", id, "hello"),
+      ...names.map((name, index) =>
+        sessionInfo(`info-${index}`, index === 0 ? "e1" : `info-${index - 1}`, name),
+      ),
+    ]);
+  }
+
+  it("retains a generated child and classifies its latest saved name", async () => {
+    const cwd = path.join(root, "workspace-A");
+    const parentSession = path.join(root, "workspace-A", "parent.jsonl");
+    const filePath = writeNamedSession(
+      "child.jsonl",
+      ["Initial", "Research helper#ABCDEF12"],
+      parentSession,
+    );
+
+    const summaries = await listSessionsForWorkspace(cwd);
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({
+      filePath,
+      parentSession,
+      name: "Research helper#ABCDEF12",
+      isSubagent: true,
+      preview: "hello",
+      messageCount: 1,
+    });
+  });
+
+  it.each(["", " \t "])("does not resurrect a generated name after a clear (%j)", async (clear) => {
+    const cwd = path.join(root, "workspace-A");
+    const parentSession = path.join(root, "workspace-A", "parent.jsonl");
+    const filePath = writeNamedSession("cleared.jsonl", ["Worker#0123abcd", clear], parentSession);
+
+    const summaries = await listSessionsForWorkspace(cwd);
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.parentSession).toBe(parentSession);
+    expect(summaries[0]?.name).toBeUndefined();
+    expect(summaries[0]).not.toHaveProperty("isSubagent");
+    expect(extractSessionMeta(filePath).name).toBe("");
+    expect(await extractSessionMetaAsync(filePath)).toEqual(extractSessionMeta(filePath));
+  });
+
+  it.each(["Promoted investigation", ""])(
+    "does not hide a session when the latest name (%j) is in the unread middle",
+    async (latestName) => {
+      const cwd = path.join(root, "workspace-A");
+      const filePath = writeNamedSession("large-child.jsonl", ["Worker#0123abcd"], "/parent.jsonl");
+      const filler = `${JSON.stringify({ type: "custom", data: "x".repeat(1024 * 1024 + 1024) })}\n`;
+      fs.appendFileSync(filePath, filler);
+      fs.appendFileSync(filePath, `${JSON.stringify(sessionInfo("rename", "e1", latestName))}\n`);
+      fs.appendFileSync(filePath, filler);
+
+      const readSpy = vi.spyOn(fsp, "readFile");
+      const summaries = await listSessionsForWorkspace(cwd);
+      expect(summaries[0]?.name).toBe("Worker#0123abcd");
+      expect(summaries[0]).not.toHaveProperty("isSubagent");
+      expect(extractSessionMeta(filePath).nameIsAuthoritative).toBe(false);
+      expect(await extractSessionMetaAsync(filePath)).toEqual(extractSessionMeta(filePath));
+      expect(readSpy).not.toHaveBeenCalled();
+
+      // Positive evidence after the skipped region can safely hide a child.
+      fs.appendFileSync(
+        filePath,
+        `${JSON.stringify(sessionInfo("latest", "rename", "Worker#abcdef12"))}\n`,
+      );
+      const future = new Date(summaries[0]!.mtime + 5000);
+      fs.utimesSync(filePath, future, future);
+      expect((await listSessionsForWorkspace(cwd))[0]).toMatchObject({
+        name: "Worker#abcdef12",
+        isSubagent: true,
+      });
+    },
+  );
+
+  it("does not hide from metadata before a discarded boundary-spanning rename", async () => {
+    const cwd = path.join(root, "workspace-A");
+    const filePath = writeNamedSession(
+      "boundary-child.jsonl",
+      ["Worker#0123abcd"],
+      "/parent.jsonl",
+    );
+    const paddingBytes = 1024 * 1024 - fs.statSync(filePath).size - 16;
+    const fillerOverhead = Buffer.byteLength(`${JSON.stringify({ type: "custom", data: "" })}\n`);
+    fs.appendFileSync(
+      filePath,
+      `${JSON.stringify({ type: "custom", data: "x".repeat(paddingBytes - fillerOverhead) })}\n`,
+    );
+    fs.appendFileSync(filePath, `${JSON.stringify(sessionInfo("rename", "e1", "Promoted"))}\n`);
+    fs.appendFileSync(filePath, `${JSON.stringify({ type: "custom", data: "tail" })}\n`);
+
+    expect((await listSessionsForWorkspace(cwd))[0]).not.toHaveProperty("isSubagent");
+    expect(extractSessionMeta(filePath).nameIsAuthoritative).toBe(false);
+    expect(await extractSessionMetaAsync(filePath)).toEqual(extractSessionMeta(filePath));
+  });
+
+  it.each(["fork", "clone"])(
+    "does not classify an ordinary %s by its parent alone",
+    async (kind) => {
+      const cwd = path.join(root, "workspace-A");
+      const parentSession = path.join(root, "workspace-A", "parent.jsonl");
+      const name = `My work (${kind})`;
+      writeNamedSession(`${kind}.jsonl`, [name], parentSession);
+
+      const summaries = await listSessionsForWorkspace(cwd);
+
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]).toMatchObject({ name, parentSession });
+      expect(summaries[0]).not.toHaveProperty("isSubagent");
+      expect(await listSessionsForWorkspace(cwd)).toEqual(summaries);
+    },
+  );
+
+  it("leaves a user-chosen generated-looking name without parent metadata visible", async () => {
+    const cwd = path.join(root, "workspace-A");
+    writeNamedSession("ordinary.jsonl", ["My notes#0123abcd"]);
+
+    const summaries = await listSessionsForWorkspace(cwd);
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.name).toBe("My notes#0123abcd");
+    expect(summaries[0]).not.toHaveProperty("parentSession");
+    expect(summaries[0]).not.toHaveProperty("isSubagent");
+  });
+
+  it.each(
+    [null, 42, false, [], { path: "/sessions/parent.jsonl" }, "", " \t"].map((parentSession) => ({
+      parentSession,
+    })),
+  )(
+    "keeps a session with malformed or empty optional parent $parentSession visible",
+    async ({ parentSession }) => {
+      const cwd = path.join(root, "workspace-A");
+      writeNamedSession("malformed-parent.jsonl", ["Worker#0123abcd"], parentSession);
+
+      const summaries = await listSessionsForWorkspace(cwd);
+
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]?.name).toBe("Worker#0123abcd");
+      expect(summaries[0]).not.toHaveProperty("parentSession");
+      expect(summaries[0]).not.toHaveProperty("isSubagent");
+      expect(await listSessionsForWorkspace(cwd)).toEqual(summaries);
+    },
+  );
+
+  it("removes the hint after a child is renamed without mutating earlier summaries", async () => {
+    const cwd = path.join(root, "workspace-A");
+    const parentSession = path.join(root, "workspace-A", "parent.jsonl");
+    const filePath = writeNamedSession("renamed.jsonl", ["Worker#0123abcd"], parentSession);
+    const first = await listSessionsForWorkspace(cwd);
+    const cached = await listSessionsForWorkspace(cwd);
+    expect(cached).toEqual(first);
+    expect(first[0]?.isSubagent).toBe(true);
+
+    fs.appendFileSync(
+      filePath,
+      `${JSON.stringify(sessionInfo("info-1", "info-0", "Promoted investigation"))}\n`,
+    );
+    const future = new Date(first[0]!.mtime + 5000);
+    fs.utimesSync(filePath, future, future);
+
+    const renamed = await listSessionsForWorkspace(cwd);
+
+    expect(renamed).toHaveLength(1);
+    expect(renamed[0]).toMatchObject({ name: "Promoted investigation", parentSession });
+    expect(renamed[0]).not.toHaveProperty("isSubagent");
+    expect(await listSessionsForWorkspace(cwd)).toEqual(renamed);
+    expect(first[0]).toMatchObject({ name: "Worker#0123abcd", parentSession, isSubagent: true });
+    expect(cached).toEqual(first);
+  });
+
+  it("keeps fresh and cached summaries isolated from caller mutation without rereading", async () => {
+    const cwd = path.join(root, "workspace-A");
+    const parentSession = path.join(root, "workspace-A", "parent.jsonl");
+    writeNamedSession("cached-child.jsonl", ["Worker#0123abcd"], parentSession);
+    const first = await listSessionsForWorkspace(cwd);
+    const expected = { ...first[0]! };
+    first[0]!.name = "Caller-local rename";
+    delete first[0]!.parentSession;
+    first[0]!.isSubagent = false;
+
+    const openSpy = vi.spyOn(fsp, "open");
+    const readSpy = vi.spyOn(fsp, "readFile");
+    const cached = await listSessionsForWorkspace(cwd);
+    expect(cached).toEqual([expected]);
+    expect(cached[0]).not.toBe(first[0]);
+
+    cached[0]!.name = "Another caller-local rename";
+    delete cached[0]!.isSubagent;
+    expect(await listSessionsForWorkspace(cwd)).toEqual([expected]);
+    expect(openSpy).not.toHaveBeenCalled();
+    expect(readSpy).not.toHaveBeenCalled();
+  });
+
+  it("still applies archive settings on cached child summaries", async () => {
+    const cwd = path.join(root, "workspace-A");
+    const parentSession = path.join(root, "workspace-A", "parent.jsonl");
+    const childFile = writeNamedSession("child.jsonl", ["Worker#0123abcd"], parentSession);
+    const forkFile = writeNamedSession("fork.jsonl", ["Normal fork"], parentSession);
+    expect(await listSessionsForWorkspace(cwd)).toHaveLength(2);
+
+    saveSettings({ archivedSessions: [childFile] });
+    const archived = await listSessionsForWorkspace(cwd);
+    expect(archived.map((summary) => summary.filePath)).toEqual([forkFile]);
+
+    saveSettings({ archivedSessions: [] });
+    const restored = await listSessionsForWorkspace(cwd);
+    expect(restored).toHaveLength(2);
+    expect(restored.find((summary) => summary.filePath === childFile)).toMatchObject({
+      parentSession,
+      isSubagent: true,
+    });
   });
 });
 

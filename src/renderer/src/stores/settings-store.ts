@@ -1,4 +1,4 @@
-import type { AppSettings, ThemeAppearance } from "@shared/settings.js";
+import type { AppSettings, SessionGroup, ThemeAppearance } from "@shared/settings.js";
 import { defaultSettings, resolveActiveColorScheme } from "@shared/settings.js";
 import { create } from "zustand";
 import { setShikiTheme } from "../lib/shiki.js";
@@ -11,6 +11,8 @@ interface SettingsStore {
   loaded: boolean;
   load: () => Promise<void>;
   update: (updates: Partial<AppSettings>) => Promise<void>;
+  /** Pure mutations rebase on confirmed groups when their serialized write runs. */
+  updateSessionGroups: (mutate: (groups: SessionGroup[]) => SessionGroup[]) => Promise<void>;
   updateReadingFonts: (
     updates: Partial<Pick<AppSettings["fonts"], "title" | "transcriptHeader" | "transcriptBody">>,
   ) => Promise<void>;
@@ -33,7 +35,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
   };
 
   const persistUpdate = (
-    updates: Partial<AppSettings>,
+    updates: Partial<AppSettings> | ((confirmed: AppSettings) => Partial<AppSettings>),
     optimisticSettings: AppSettings,
   ): Promise<void> => {
     const revision = ++updateRevision;
@@ -42,7 +44,12 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
     // Main persists each settings patch atomically. Serialize renderer writes so
     // a later patch cannot reach main first, and fence each response so an older
     // acknowledgement cannot repaint over a newer optimistic choice.
-    const write = writeTail.then(() => window.pivis.invoke("settings.set", updates));
+    const write = writeTail.then(() =>
+      window.pivis.invoke(
+        "settings.set",
+        typeof updates === "function" ? updates(persistedSettings) : updates,
+      ),
+    );
     writeTail = write.then(
       () => undefined,
       () => undefined,
@@ -87,6 +94,16 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
     update: (updates) => {
       const current = get().settings;
       return persistUpdate(updates, { ...current, ...updates });
+    },
+
+    updateSessionGroups: (mutate) => {
+      const current = get().settings;
+      // A later group gesture is an intent, not a retry of an earlier failed
+      // optimistic snapshot. Only resolved partial settings cross IPC.
+      return persistUpdate((confirmed) => ({ sessionGroups: mutate(confirmed.sessionGroups) }), {
+        ...current,
+        sessionGroups: mutate(current.sessionGroups),
+      });
     },
 
     updateReadingFonts: (updates) => {

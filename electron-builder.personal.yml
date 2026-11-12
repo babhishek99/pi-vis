@@ -1,0 +1,20 @@
+# Local, independently identified app; never publish to or consume upstream releases.
+extends: ./electron-builder.yml
+appId: dev.pivis.personal
+productName: Pi-Vis Personal
+directories:
+  output: release/personal/${version}
+extraMetadata:
+  name: pi-vis-personal
+  productName: Pi-Vis Personal
+publish: null
+mac:
+  # Retain the internal executable name used by the final-artifact verifier.
+  # Finder, Dock, helpers and the runtime app name use Pi-Vis Personal.
+  executableName: Pi-Vis
+  # Ad-hoc seal the local bundle without using a Developer ID certificate.
+  identity: "-"
+  preAutoEntitlements: false
+  timestamp: none
+  strictVerify: true
+  notarize: false

@@ -3106,6 +3106,38 @@ describe("SessionRegistry direct AgentSession authority", () => {
     h.registry.stopAll();
   });
 
+  it("maps activity reads without semantic admission, visit interaction or result reduction", async () => {
+    const h = harness();
+    const id = h.registry.openSession("/tmp/project");
+    await h.registry.activateSession(id, "/tmp/pi", {});
+    const record = h.registry.getSession(id)!;
+    const [hostInstanceId, sessionEpoch] = runtimeIdentity(record);
+    const query = vi.spyOn(record.proc!, "query").mockResolvedValue({
+      type: "response",
+      command: "get_subagent_activity",
+      success: true,
+      data: { status: "unavailable" },
+    });
+    const mutation = record._mutationSequence;
+    const interaction = record._activationVisitInteracted;
+    await expect(
+      h.registry.query({
+        sessionId: id,
+        queryId: "activity-read",
+        expectedOwner: { hostInstanceId, sessionEpoch },
+        query: { type: "get_subagent_activity" },
+      }),
+    ).resolves.toMatchObject({
+      status: "ok",
+      queryType: "get_subagent_activity",
+      response: { data: { status: "unavailable" } },
+    });
+    expect(query).toHaveBeenCalledWith({ type: "get_subagent_activity" });
+    expect(record._mutationSequence).toBe(mutation);
+    expect(record._activationVisitInteracted).toBe(interaction);
+    h.registry.stopAll();
+  });
+
   it("maps a render_message query to the owner-fenced host command", async () => {
     const h = harness();
     const id = h.registry.openSession("/tmp/project");
@@ -3187,59 +3219,65 @@ describe("SessionRegistry direct AgentSession authority", () => {
     h.registry.stopAll();
   });
 
-  it("does not dispatch a query with a stale owner", async () => {
-    const h = harness();
-    const id = h.registry.openSession("/tmp/project");
-    await h.registry.activateSession(id, "/tmp/pi", {});
-    const record = h.registry.getSession(id)!;
-    const [hostInstanceId, sessionEpoch] = runtimeIdentity(record);
-    const query = vi.spyOn(record.proc!, "query");
+  it.each(["get_state", "get_subagent_activity"] as const)(
+    "does not dispatch %s with a stale owner",
+    async (type) => {
+      const h = harness();
+      const id = h.registry.openSession("/tmp/project");
+      await h.registry.activateSession(id, "/tmp/pi", {});
+      const record = h.registry.getSession(id)!;
+      const [hostInstanceId, sessionEpoch] = runtimeIdentity(record);
+      const query = vi.spyOn(record.proc!, "query");
 
-    await expect(
-      h.registry.query({
-        sessionId: id,
-        queryId: "stale-before",
-        expectedOwner: { hostInstanceId, sessionEpoch: sessionEpoch + 1 },
-        query: { type: "get_state" },
-      }),
-    ).resolves.toEqual({ status: "superseded" });
-    expect(query).not.toHaveBeenCalled();
-    h.registry.stopAll();
-  });
-
-  it("fences a query response after its owner changes without retrying", async () => {
-    const h = harness();
-    const id = h.registry.openSession("/tmp/project");
-    await h.registry.activateSession(id, "/tmp/pi", {});
-    const record = h.registry.getSession(id)!;
-    const [hostInstanceId, sessionEpoch] = runtimeIdentity(record);
-    let resolveQuery!: (response: PiRpcResponse) => void;
-    const query = vi.spyOn(record.proc!, "query").mockImplementation(
-      () =>
-        new Promise<PiRpcResponse>((resolve) => {
-          resolveQuery = resolve;
+      await expect(
+        h.registry.query({
+          sessionId: id,
+          queryId: "stale-before",
+          expectedOwner: { hostInstanceId, sessionEpoch: sessionEpoch + 1 },
+          query: { type },
         }),
-    );
+      ).resolves.toEqual({ status: "superseded" });
+      expect(query).not.toHaveBeenCalled();
+      h.registry.stopAll();
+    },
+  );
 
-    const pending = h.registry.query({
-      sessionId: id,
-      queryId: "stale-after",
-      expectedOwner: { hostInstanceId, sessionEpoch },
-      query: { type: "get_state" },
-    });
-    await vi.waitFor(() => expect(query).toHaveBeenCalledOnce());
-    record.proc!.sessionEpoch = sessionEpoch + 1;
-    resolveQuery({
-      type: "response",
-      command: "get_state",
-      success: true,
-      data: {},
-    });
+  it.each(["get_state", "get_subagent_activity"] as const)(
+    "fences %s after its owner changes without retrying",
+    async (type) => {
+      const h = harness();
+      const id = h.registry.openSession("/tmp/project");
+      await h.registry.activateSession(id, "/tmp/pi", {});
+      const record = h.registry.getSession(id)!;
+      const [hostInstanceId, sessionEpoch] = runtimeIdentity(record);
+      let resolveQuery!: (response: PiRpcResponse) => void;
+      const query = vi.spyOn(record.proc!, "query").mockImplementation(
+        () =>
+          new Promise<PiRpcResponse>((resolve) => {
+            resolveQuery = resolve;
+          }),
+      );
 
-    await expect(pending).resolves.toEqual({ status: "superseded" });
-    expect(query).toHaveBeenCalledOnce();
-    h.registry.stopAll();
-  });
+      const pending = h.registry.query({
+        sessionId: id,
+        queryId: "stale-after",
+        expectedOwner: { hostInstanceId, sessionEpoch },
+        query: { type },
+      });
+      await vi.waitFor(() => expect(query).toHaveBeenCalledOnce());
+      record.proc!.sessionEpoch = sessionEpoch + 1;
+      resolveQuery({
+        type: "response",
+        command: type,
+        success: true,
+        data: {},
+      });
+
+      await expect(pending).resolves.toEqual({ status: "superseded" });
+      expect(query).toHaveBeenCalledOnce();
+      h.registry.stopAll();
+    },
+  );
 
   it("repairs a dropped start event from a fresh direct snapshot", async () => {
     const h = harness();

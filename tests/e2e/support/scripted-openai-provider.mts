@@ -264,7 +264,7 @@ const latencyFor = (
   defaults: ScriptedOpenAILatency | undefined,
   step: ScriptedOpenAILatency | undefined,
   response: ScriptedOpenAILatency | undefined,
-): ScriptedOpenAILatency => ({
+) => ({
   firstByteMs: response?.firstByteMs ?? step?.firstByteMs ?? defaults?.firstByteMs,
   perChunkMs: response?.perChunkMs ?? step?.perChunkMs ?? defaults?.perChunkMs,
   seed: response?.seed ?? step?.seed ?? defaults?.seed,

@@ -3,7 +3,7 @@
 // Precedence (active session), first match wins:
 //   1. newest normal claim -> DEFER (its DOM surface owns ESC)
 //   2. newest routed claim -> consume and route it once to that surface
-//   3. no claim -> INTERRUPT (main/host routes the abort)
+//   3. no claim -> INTERRUPT THIS TAB (host signals parent, then its subagent bus)
 //   4. else -> no-op (let ESC reach whatever is focused)
 //
 // Capture phase + stopImmediatePropagation: preempts React's synthetic
@@ -12,7 +12,8 @@
 // block same-node capture listeners).
 //
 // INVARIANTS (L3): G1 mutual exclusivity; G2 interrupt when unclaimed+active
-// regardless of focus; G3 never interrupt idle; G4 no modified/IME ESC; G5
+// regardless of focus; G3 genuinely idle host is a no-op (background work counts);
+// G4 no modified/IME ESC; G5
 // active session only.
 
 import { useEffect } from "react";
@@ -46,7 +47,8 @@ export function useGlobalEscapeInterrupt(): void {
       const sid = store.activeSessionId; // G5
       if (!sid) return;
       // Cached renderer liveness is never an ESC routing authority. The host
-      // checks fresh AgentSession getters and acknowledges the honest branch.
+      // checks fresh AgentSession getters and its private subagent stop receipt;
+      // an idle parent can still own background agents or workflows.
       e.preventDefault();
       e.stopImmediatePropagation();
       void store.abortSession(sid);

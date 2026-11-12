@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { expect, test } from "./support/invariants.mjs";
 import {
   PINNED_PI_VERSION,
@@ -33,6 +33,24 @@ test.describe("packaged macOS PTY", () => {
     try {
       launch = await fixture.launch();
       const { window } = launch;
+      // The harness deliberately exposes renderer CDP only, not main evaluation.
+      // Read build identity independently so a broken runtime name cannot skip
+      // the personal updater checks; the fixture log proves the profile override.
+      const bundleInfo = fs.readFileSync(
+        join(dirname(dirname(packagedExecutable!)), "Info.plist"),
+        "utf8",
+      );
+      expect(fs.existsSync(join(fixture.dirs.settings, "diagnostics.log"))).toBe(true);
+      if (bundleInfo.includes("<string>dev.pivis.personal</string>")) {
+        const updates = await window.evaluate(() =>
+          window.pivis.invoke("appUpdate.check", undefined),
+        );
+        expect(updates.state).toBe("disabled");
+        expect(updates.feedUrl).toBeUndefined();
+        await expect(
+          window.evaluate(() => window.pivis.invoke("appUpdate.install", undefined)),
+        ).resolves.toMatchObject({ state: "disabled" });
+      }
       await expect(
         window.evaluate(() => window.pivis.invoke("pi.info", undefined)),
       ).resolves.toEqual({ version: PINNED_PI_VERSION });

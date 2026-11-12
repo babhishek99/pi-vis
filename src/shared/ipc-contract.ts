@@ -5,6 +5,7 @@ import type {
   ExtensionUpdateStatus,
   ExtensionUpdateTarget,
 } from "./extension-updates.js";
+import type { GatewaySpendResult } from "./gateway-spend.js";
 import type {
   GitBranchesResult,
   GitChangedFile,
@@ -60,6 +61,12 @@ export interface SessionSummary {
   filePath: string;
   id: string;
   name?: string | undefined;
+  /** Persisted parent-file reference for sidebar presentation only. Forks/clones
+   *  also carry this; it is not runtime identity or evidence of liveness. */
+  parentSession?: string | undefined;
+  /** Persisted header/name-derived sidebar hint, absent without positive evidence.
+   *  This is presentation metadata, NOT runtime identity or liveness. */
+  isSubagent?: boolean | undefined;
   mtime: number;
   /** Epoch-ms of the most recent user-authored entry (prompt / `!bash`),
    *  read from the session file. Absent for sessions with no user messages,
@@ -293,6 +300,7 @@ export interface IpcInvokeContract {
     res: TranscriptBlock[];
   };
   /** Owner-bound, retry-policy-governed read-only host API. */
+  /** Owner-bound reads only, including bounded get_subagent_activity display snapshots. */
   "session.query": { req: SessionQueryEnvelope; res: SessionQueryResult };
   /** The only text/image submission path. Pi chooses idle prompt vs queued delivery. */
   "session.submit": {
@@ -329,6 +337,7 @@ export interface IpcInvokeContract {
     req: { sessionId: SessionId; intentId: string; expectedOwner: RuntimeIdentity };
     res: { acknowledged: boolean };
   };
+  /** Tab-local parent + subagent stop request; receipts never imply settlement. */
   "session.escape": {
     req: {
       sessionId: SessionId;
@@ -548,6 +557,12 @@ export interface IpcInvokeContract {
       error?: string;
     };
     res: { ok: boolean };
+  };
+  /** Read-only, main-configured personal audit queries; no renderer query/path input. */
+  "gatewaySpend.month": { req: { refresh?: boolean }; res: GatewaySpendResult };
+  "gatewaySpend.session": {
+    req: { sessionId: SessionId; refresh?: boolean };
+    res: GatewaySpendResult;
   };
   "settings.get": { req: undefined; res: AppSettings };
   "settings.set": { req: Partial<AppSettings>; res: AppSettings };

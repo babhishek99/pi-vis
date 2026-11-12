@@ -7,6 +7,15 @@ export const TranscriptStyleSchema = z.enum(["verbose", "compact"]);
 export type TranscriptStyle = z.infer<typeof TranscriptStyleSchema>;
 export type ThemeAppearance = "light" | "dark";
 
+export const SessionGroupSchema = z.object({
+  id: z.string().min(1),
+  workspacePath: z.string().min(1),
+  name: z.string().trim().min(1).max(80),
+  sessionFiles: z.array(z.string()).default([]),
+  collapsed: z.boolean().default(false),
+});
+export type SessionGroup = z.infer<typeof SessionGroupSchema>;
+
 const DisplayFontSettingsSchema = z.object({
   // The interface font family is intentionally app-owned (currently Inter) so
   // layout can be tuned against stable font metrics. Users can still scale the
@@ -142,6 +151,12 @@ export const AppSettingsSchema = z.object({
   // files) are filtered out at render rather than pruned here, matching
   // archivedSessions' trade-off.
   pinnedSessions: z.array(z.string()).default([]),
+  // Sidebar-only organization. Membership uses the same durable session-file
+  // keys as pins; grouping never moves or rewrites a conversation's history.
+  sessionGroups: z.array(SessionGroupSchema).default([]),
+  // Sub-agent history remains available on disk and through search. This only
+  // filters the sidebar; it does not stop agents or archive their sessions.
+  showSubagentSessions: z.boolean().default(false),
   archivedSessions: z.array(z.string()).default([]),
   // Checks for updates to the packaged Pi-Vis desktop app via Electron's
   // built-in autoUpdater. Separate from extension-package updates because it

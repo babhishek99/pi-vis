@@ -10,16 +10,27 @@
 // have flushed yet, silently swallowing the second ESC). DO NOT "simplify"
 // this to useEffect — it reintroduces a 3-press bug.
 
-import { useLayoutEffect, useRef } from "react";
-import { type EscapeRoute, useOverlayStore } from "../stores/overlay-store.js";
+import { type RefObject, useLayoutEffect, useRef } from "react";
+import {
+  type EscapeClaimToken,
+  type EscapeRoute,
+  useOverlayStore,
+} from "../stores/overlay-store.js";
 
-export function useEscapeClaim(open: boolean): void {
+/** The optional ref lets a DOM surface dismiss only its own topmost claim. */
+export function useEscapeClaim(open: boolean): RefObject<EscapeClaimToken | undefined> {
+  const claim = useRef<EscapeClaimToken | undefined>(undefined);
   useLayoutEffect(() => {
     if (!open) return;
     const { _acquire, _release } = useOverlayStore.getState();
     const token = _acquire();
-    return () => _release(token);
+    claim.current = token;
+    return () => {
+      _release(token);
+      if (claim.current === token) claim.current = undefined;
+    };
   }, [open]);
+  return claim;
 }
 
 /**

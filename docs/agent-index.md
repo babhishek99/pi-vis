@@ -5,6 +5,8 @@ Load only the documentation relevant to the change.
 - Broad runtime or repository work: `docs/architecture/overview.md`.
 - SDK host, main/preload IPC, runtime-state schemas, process lifecycle, panels, transitions, the deployed authority-frame protocol, or per-plane synchronization: `docs/architecture/processes-and-ipc.md`, `docs/architecture/state-and-sessions.md`, `docs/decisions/0003-authority-frames-and-plane-synchronization.md`, and `docs/decisions/0005-retain-presentation-labels-across-authority-fences.md`.
 - Submission admission, queue custody/restoration, editor revisions, ESC, renderer/UI acknowledgements, or close/cap behavior: also read those two architecture docs, `docs/decisions/0004-silent-reconciliation-replaces-user-review.md`, and `docs/ui-conventions.md`.
+- Active-tab agent tray, activity read models, or protocol-4 snapshot integration: `docs/architecture/agent-activity.md`, `docs/architecture/runtime-services.md`, `docs/ui-conventions.md`, and the **Agent tray coverage** section of `docs/testing.md`; transport changes also require the IPC/state docs above.
+- Tab-scoped parent/subagent Escape cancellation or its protocol-4 extension integration: also read `docs/architecture/runtime-services.md` and the **Tab-scoped stop-all coverage** section of `docs/testing.md`; preserve the IPC/state and Escape-ownership rules above.
 - Composer/slash execution or command admission/settlement: `docs/architecture/commands.md` and `docs/architecture/command-matrix.md`; for authority-frame migration also read `docs/decisions/0003-authority-frames-and-plane-synchronization.md`.
 - Session sharing, Radius upload, or Gist OS effects: also read `docs/compatibility/pi-1.4.0.md`; the host helper is `resources/pi-session-host/session-share.mjs` and main's owner-bound Gist effect is `src/main/share.ts`.
 - Direct `!`/`!!` shell drafts, Shell Turns, PTY lifecycle, terminal normalization, shell input/resize/cancellation, or shell transcript rendering: `docs/product/elastic-shell-turns.md`; also read `docs/architecture/commands.md`, `docs/architecture/processes-and-ipc.md`, `docs/architecture/state-and-sessions.md`, `docs/architecture/runtime-services.md`, `docs/ui-conventions.md`, `docs/testing.md`, and `docs/compatibility/pi-1.4.0.md`.
@@ -17,6 +19,8 @@ Load only the documentation relevant to the change.
   `docs/important-paths.md`, and `docs/testing.md`.
 - Tests, fault injection, fixtures, or verification: `docs/testing.md`.
 - Paths and persisted locations: `docs/important-paths.md`.
+- Personal fork iteration, standalone personal packaging/identity, or isolated profiles: `docs/personal-fork.md`; packaging also requires the release docs below, and sidebar behavior requires `docs/architecture/sidebar-shell-layout.md`.
+- Gateway audit costs, private Datadog configuration/cache, monthly or per-session spend UI, or prospective request attribution: `docs/architecture/gateway-spend.md`, `docs/personal-fork.md`, `docs/architecture/runtime-services.md`, and `docs/testing.md`. Transport/host changes also require the IPC/state and pinned-runtime docs above.
 - Workspace saved-session search, its worker/index, result context, or search UI: `docs/architecture/session-search.md`, `docs/decisions/0002-workspace-session-search.md`, `docs/architecture/sidebar-shell-layout.md`, and `docs/ui-conventions.md`; also read `docs/testing.md` for corpus and gates.
 - Release automation, final-app packaging gates, signing, notarization, or
   publication: `docs/releasing.md`, `RELEASING.md`, `docs/testing.md`, and the

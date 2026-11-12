@@ -346,6 +346,7 @@ function commandForSessionQuery(query: SessionQuery): PiReadOnlyCommand {
     case "get_commands":
     case "get_state":
     case "get_session_stats":
+    case "get_subagent_activity":
     case "get_messages":
     case "get_fork_messages":
     case "get_last_assistant_text":

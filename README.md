@@ -10,6 +10,15 @@ extensions.
 - **Run many agents in parallel.** Each session is an independent pi agent. Kick
   off work across multiple projects from one workspace sidebar and switch between
   them while they run — no juggling terminal tabs.
+- **Organized session sidebar.** Create named, collapsible groups, move sessions
+  between them, and keep pins ordered within each section. Double-click a saved
+  session to rename it inline. Generated sub-agent sessions are hidden by default;
+  show them from Settings when needed.
+- **Active-tab agent tray.** Inspect counts, authored task summaries, workflow
+  phases and real nested relationships from a compatible protocol-4 subagent
+  extension. Queued, starting, running, unwinding and finished stay distinct;
+  unavailable support is unknown, not zero. The tray is read-only, and its first
+  Escape dismisses it without stopping work.
 - **Built-in diff viewer.** See exactly what an agent changed in a
   syntax-highlighted unified or split diff, with branch-relative comparisons. A
   live changed-files badge updates as the agent edits.
@@ -59,6 +68,15 @@ npm run dev
 ```
 
 Opens the Electron app with HMR. The renderer is also accessible at http://localhost:5173 (with a stub pivis API).
+
+## Personal customization
+
+See [Personal fork development](docs/personal-fork.md) for an isolated UI preview,
+a separate Electron profile, session-group controls, and opt-in gateway-recorded
+spend. A private Datadog adapter reports the current UTC month to date across
+personal gateway traffic; supported requests can be attributed prospectively to
+a direct session with explicit partial coverage. Missing history is never priced
+by guesswork. These changes do not replace your installed app.
 
 ## Testing
 

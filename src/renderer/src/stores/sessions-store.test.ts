@@ -6114,6 +6114,61 @@ describe("sessions store - host-authoritative escape", () => {
     });
   });
 
+  it("shows an honest subagent-stop warning even when cached parent liveness is idle", async () => {
+    installAuthority();
+    invokeMock.mockResolvedValue({
+      disposition: "outcome_unknown",
+      subagents: { status: "unsupported" },
+      message:
+        "Parent interruption was handled, but this subagent extension needs the stop-all update.",
+    });
+    useSessionsStore.getState().abortSession(SESSION_A);
+    await vi.waitFor(() =>
+      expect(useSessionsStore.getState().sessions.get(SESSION_A)?.toasts).toEqual([
+        expect.objectContaining({
+          type: "warning",
+          message: expect.stringContaining("stop-all update"),
+        }),
+      ]),
+    );
+  });
+
+  it.each(["reply", "rejection"])(
+    "drops a late Escape %s after owner replacement, without replay",
+    async (kind) => {
+      installAuthority();
+      let resolve!: (value: unknown) => void;
+      let reject!: (error: Error) => void;
+      const pending = new Promise((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      invokeMock.mockReturnValue(pending);
+      const before = invokeMock.mock.calls.filter(
+        ([channel]) => channel === "session.escape",
+      ).length;
+      useSessionsStore.getState().abortSession(SESSION_A);
+      useSessionsStore
+        .getState()
+        .applyAuthorityAttach(
+          SESSION_A,
+          authorityAttach(
+            semanticSnapshot(1, { owner: { hostInstanceId: "successor", sessionEpoch: 2 } }),
+          ),
+        );
+      if (kind === "reply")
+        resolve({ disposition: "outcome_unknown", message: "old stop failure" });
+      else reject(new Error("old stop rejection"));
+      await pending.catch(() => undefined);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(useSessionsStore.getState().sessions.get(SESSION_A)?.toasts).toHaveLength(0);
+      expect(
+        invokeMock.mock.calls.filter(([channel]) => channel === "session.escape"),
+      ).toHaveLength(before + 1);
+    },
+  );
+
   it("bypasses a held intent admission when dispatching escape", async () => {
     installAuthority();
     let releaseAdmission!: () => void;

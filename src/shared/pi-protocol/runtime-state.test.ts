@@ -663,6 +663,7 @@ describe("authority protocol schemas", () => {
       "get_scoped_models",
       "get_session_stats",
       "get_state",
+      "get_subagent_activity",
       "get_tree",
       "get_trust_state",
       "render_entry",

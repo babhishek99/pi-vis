@@ -34,19 +34,19 @@ workspace. The `workspace.list` IPC channel (renamed from `workspace.recents`)
 returns the ordered, existence-pruned list.
 
 **Pinned sessions** (`settings.pinnedSessions`, a global array of session-file paths):
-a pinned row floats to the TOP of its workspace's session list, above the
-activity-sorted rows, in persisted manual order. Each row has a pin button (hover-
+a pinned row floats to the TOP of its containing session group (or the ungrouped
+list), above activity-sorted peers, in persisted manual order. Each row has a pin button (hover-
 revealed when unpinned, always-visible accent-filled when pinned); pinning appends
 to the array (lands at the bottom of the pinned group), and pinned rows are
-HTML-draggable to reorder within the group (drop targets only exist on pinned
-rows, so the group is self-contained). The array is global across workspaces — each
+HTML-draggable to reorder within the group (only same-section pinned-row drops
+reorder pins). Dropping onto another section instead moves group membership and
+leaves the global pin order unchanged. The array is global across workspaces — each
 workspace view renders only its own keys in their relative order. Keyed by file
 path (stable across relaunch and shared by the live row and its stored counterpart,
 so a pin survives the live→stored idle-eviction transition). Stale keys are filtered
-at render, not pruned, matching `archivedSessions`' trade-off. Because pinned rows
-sit at the front of the unified list and pagination slices from the front
-(`visibleSessions = unifiedSessions.slice(0, visibleCount)`), pinned rows are never
-pushed off the first page by newer unpinned sessions.
+at render, not pruned, matching `archivedSessions`' trade-off. Each section is
+paginated independently from the front, so newer unpinned peers cannot push its
+pinned rows off that section's first page. A collapsed group remains collapsed.
 
 Unpinned activity order advances from an authoritative delivered user message,
 using the message's authored timestamp. Merely opening or reattaching a saved
@@ -75,18 +75,150 @@ follow the archive convention. Confirmation closes the dialog immediately and
 leaves restart reachable during successor startup; startup failures surface through
 the ordinary session status and a toast.
 
+### Inline session names
+
+Double-click a file-backed session row to edit its name, or focus the row and
+press **F2**. The native single-line input selects the presented name; **Enter**
+saves a trimmed, nonempty value, **Escape** cancels an unsent edit, and blur
+commits a changed value. An unchanged name closes without a mutation; a blank
+name keeps its draft with an inline error. IME/composing and modified Enter or
+Escape do not submit or cancel. Row action buttons and session dragging are
+unavailable while editing, so selecting text cannot move, pin, archive or restart
+the session. Pathless pending sessions must acquire a saved file first.
+
+The ordinary first click still opens/selects the session. Stored and live rows
+share the durable file-path React key so that promotion during a native double-
+click does not remove its target or lose the editor. `SidebarSessionName.tsx`
+keeps only a local draft and bounded request correlation: it waits for that
+file's record and following semantic authority, dispatches the existing
+owner/cursor-bound `rename` intent once, and treats only its matching same-owner
+authority outcome as success. A receipt never changes the presented name.
+Initial-authority and confirmation waits are bounded to thirty seconds. Refusal,
+SDK failure, owner/file replacement, and unknown delivery preserve an editable
+draft with feedback, without automatically replaying a mutation. Blurring an
+error is not a retry; the user must press Enter again or edit a new draft. Escape can
+cancel a save still waiting for initial authority; once dispatched, the field
+awaits confirmation rather than trying to undo or interrupt Pi.
+
+The focused field owns Escape through a layout-effect claim; losing focus
+releases it even while a save settles. Cancel/success restores the row only if
+the field still owns focus. Late completions cannot steal another control's
+focus, and collapse, filtering, pagination or file transitions retire detached
+editors rather than reopening stale drafts. Initial focus is gesture-revision
+scoped and single-use, so an older group save/rollback that reparents an editor
+cannot focus its temporary replacement before retirement. Pins, group membership, workspace
+order and section pagination retain their normal semantics.
+
+This is an intentional session-metadata operation, unlike settings-only group
+renaming. The existing SDK host calls public `AgentSession.setSessionName`,
+which appends `session_info` to the same saved conversation. Pi remains the
+semantic/persistence authority: there is no renderer label override, alternate
+rename IPC, filesystem rename, transcript rewrite or agent interruption. After
+confirmation the normal workspace discovery refresh exposes the persisted name.
+
+### Session groups and sub-agent visibility
+
+The **Create session group** folder action beside **New session** creates a named
+workspace-local section. Groups render in saved creation order above **Ungrouped**.
+Each header has an independent disclosure, session count, and hover/keyboard-focus
+rename/remove actions. Removing a group immediately returns its sessions to
+Ungrouped; it never archives, closes, deletes, or rewrites a session. Empty groups
+remain available as destinations.
+
+Any file-backed live or stored row can be dragged onto a group header or anywhere
+inside a different section of the same workspace. Valid targets highlight using
+semantic surface/accent tokens. Dropping onto a collapsed group opens it and
+immediately reveals the moved row's page; **Ungrouped** remains a visible drop
+destination even when empty. Drops reuse the existing optimistic settings write,
+roll back with an error on failure, and never activate or restart a session.
+Cross-workspace/foreign drops are ignored; only an in-memory source plus the
+private drag marker authorizes a membership change. Source authorization is also
+bound to the actual connected row and its current file key; a temporary DOM
+observer/native end listener retires a detached or replaced source even when
+React's delegated `dragend` cannot reach it. Drag end/cancel clears the source and
+target highlight. Focus restoration is gesture-generation fenced so an older
+save cannot take focus from a newer drag/drop or group action. A drag claims
+Escape so cancelling cannot interrupt
+the active agent. Workspace-grip reordering and same-section pin reordering keep
+separate admission paths.
+
+A session row's **Move session to group** folder action remains the keyboard-
+accessible alternative and opens an app-owned dialog with the workspace's groups
+and Ungrouped. **New group** in that dialog creates a
+destination and assigns the session in one settings patch. Moving expands the
+destination and reveals the moved row's page. Groups use `settings.sessionGroups`
+entries `{ id, workspacePath, name, sessionFiles, collapsed }`; membership is keyed
+by durable session-file path, just like pins, and survives live/stored transitions
+and relaunch. Pathless pending sessions cannot be assigned yet. Missing files are
+ignored, not pruned. Duplicate hand-edited membership renders only in the first
+matching group. Pins and activity ordering are preserved within each section, and
+each section has its own 30-row page budget.
+
+Settings → Interface → **Show sub-agent sessions** defaults off and takes effect
+immediately. Discovery supplies a conservative saved-history hint only when a
+nonblank `parentSession` header accompanies a latest saved name ending in the
+pi-subagents-generated `#<8 hex>` suffix. Parent references alone do not hide normal
+forks or clones. Empty names explicitly clear prior generated names, matching
+pinned Pi. Old files without lineage and renamed/promoted children remain visible
+instead of being guessed. Bounded discovery never uses a head-only name to hide a
+session when a skipped middle or discarded boundary row could contain a rename;
+only a later sampled name resolves that uncertainty. Live rows use saved lineage
+plus the presented live name, including explicit clears, rather than resurrecting
+a stale discovery name. The explicitly active child remains in the list even
+while its inactive peers are hidden, and activation reveals its section page
+without reordering rows or overriding a deliberate collapse. Pins do not
+bypass this filter. Filtering precedes section pagination/counts and changes no
+runtime, archives, group membership, JSONL, or saved-session search behavior.
+
+Every group change uses `settings-store.updateSessionGroups` with a pure immutable
+mutation. It is projected optimistically, then re-evaluated against the latest
+confirmed groups when its serialized settings write runs. A later drop, collapse,
+rename, or removal therefore cannot re-persist an earlier failed move by capturing
+its optimistic array. Generated IDs are allocated once outside the mutation;
+only the resulting partial settings object crosses IPC. Other preference writes
+retain their existing behavior, and interleaved non-group patches remain intact.
+
+Group dialogs claim Escape, trap focus, and restore the invoking control (or the
+moved row when it remounts). During a slow save the focusable dialog itself keeps
+keyboard focus while controls are disabled. Failed saves return focus to the
+preserved draft with an inline error; settings persistence rolls back the
+optimistic update. Failed group removal re-queries the restored header after
+rollback rather than focusing its detached predecessor. Labels use
+`FadeText`, chrome uses the shared folder SVGs, and all styling uses semantic tokens.
+
 ### Session activity indicators
 
 The flashing sidebar dot means **working**, not merely model streaming. Its single
 selector includes authority-following streaming and every visible context-compaction
-phase (active, cancelling, and retry-wait), while extension UI that is waiting on the
-user suppresses the streaming interpretation. Terminal `agent_settled` results remain
+phase (active, cancelling, and retry-wait). A pending Pi input dialog or blocking
+custom panel takes sidebar precedence even while its requesting tool is still in
+flight: it shows the non-pulsing **Needs attention** triangle in semantic `warning`
+(yellow/amber), never the accent/purple working dot. Closing or answering the
+surface restores the ordinary working/done/idle state. This is presentation only;
+it does not change runtime authority, cancellation, or the transcript timer.
+Terminal `agent_settled` results remain
 solid done/error dots. Sidebar rows must use this shared selector rather than reading a
 raw SDK boolean, so compaction cannot disappear from the session list. Each working dot
 animates only its own compositor-friendly opacity. At mount, its CSS animation is anchored
 once to document timeline zero, keeping late or reappearing dots exactly in phase without
 animating an inherited property on `.sidebar__workspaces`, which would force frame-rate
 style recalculation across the full sidebar subtree.
+
+### Active-tab header agent tray
+
+Common `SessionControls` renders the read-only **Agents in this tab** trigger before the context meter, in both full and compact headers. It does not replace model/thinking, context/spend, notification, worktree/diff, or extension controls. The card is a body portal fitted to its actual trigger and remaining viewport; its pinned header/footer surround one padded vertical scroll owner with shared scrollbars and sibling overflow fades, so retained rows and omission notes remain reachable at 480×400. Full/compact reflow retires the departed tray's Escape claim rather than carrying an open predecessor surface into another mount.
+
+The trigger reports active/pending/unwinding agent counts and active workflow counts only for a valid same-owner read. Unknown is `?`; preparation/cleanup without a record is `…`, not an invented agent count. Actual parent/workflow relationships and missing-owner notes are display-only and independent of sidebar child hiding, saved-session classification, groups, pins, ordering and pagination. Opening focuses the list; outside focus dismissal does not steal focus. First Escape dismisses this exact newest normal claim without cancelling work. See [agent activity](agent-activity.md) for authority, privacy and lease rules.
+
+### Optional gateway-spend widget
+
+When private launch configuration enables the Datadog audit adapter, a quiet
+current-month-to-date spend control renders immediately above the sidebar footer.
+Its details identify the personal legacy-gateway/all-harness scope, actual UTC
+coverage bounds, source, as-of time, unpriced/partial records and stale/errors.
+Refresh is main-rate-limited. Missing costs never render as a known zero, and
+this presentation has no effect on groups, session order, agent activity or
+runtime admission. See `docs/architecture/gateway-spend.md`.
 
 ### Shell layout (canvas + floating content card)
 
